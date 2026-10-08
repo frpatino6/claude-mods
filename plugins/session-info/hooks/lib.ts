@@ -9,6 +9,7 @@ export const emptyStats = (): Stats => ({
   agents: [],
   turns: [],
   tools: {},
+  contextHistory: [],
   auth: 'unknown',
 })
 
@@ -362,6 +363,7 @@ export const textReport = (stats: Stats, now: number): string => {
     ...(stats.contextTokens === undefined
       ? []
       : [`Context now: ${formatInt(stats.contextTokens)}${stats.contextWindow ? ` / ${formatInt(stats.contextWindow)}` : ''} tokens (engine)`]),
+    contextTrendLine(stats),
     ...balance.lines.map(line => `${line.label}: ${line.value}`),
     `Skills: ${listText(ranked(stats.skills))}`,
     `MCP: ${listText(servers)}`,
@@ -657,4 +659,74 @@ export const hogLines = (stats: Stats): string[] => {
     ? 'none yet'
     : `${pct(sub.percent)}% of tokens (${formatTokens(sub.tokens)} of ${formatTokens(sub.total)})${sub.top.length > 0 ? `; top: ${sub.top.map(a => `${a.type} ${formatTokens(a.tokens)}`).join(', ')}` : ''}`
   return [`Token hogs: ${hogs}`, `Subagent share: ${subText}`, `Tips: ${found.length === 0 ? 'nothing stands out' : found.join(' ')}`]
+}
+
+// ---- Context growth ---------------------------------------------------------
+
+export const BLOCKS = '▁▂▃▄▅▆▇█'
+export const KEEP_SAMPLES = 40
+export const COMPACTION_RATIO = 0.7
+
+/** Appends a context-size sample; unless `force`, only when it differs from the last one. */
+export const sampleContext = (stats: Stats, tokens: number | undefined, force = false): Stats => {
+  if (tokens === undefined) return stats
+  const last = stats.contextHistory[stats.contextHistory.length - 1]
+  if (!force && last === tokens) return stats
+  return { ...stats, contextHistory: [...stats.contextHistory, tokens].slice(-KEEP_SAMPLES) }
+}
+
+/** Indices where the context fell by more than 30% from the sample before: a compaction or a clear. */
+export const findDrops = (values: number[]): number[] =>
+  values.flatMap((v, i) => (i > 0 && (values[i - 1] ?? 0) > 0 && v < (values[i - 1] ?? 0) * COMPACTION_RATIO ? [i] : []))
+
+/** At most `n` points: the last sample of each bucket, so the final column is always the current size. */
+export const downsample = (values: number[], n: number): number[][] => {
+  if (n <= 0) return []
+  if (values.length <= n) return values.map((_, i) => [i])
+  return Array.from({ length: n }, (_, k) => {
+    const from = Math.floor((k * values.length) / n)
+    const to = Math.floor(((k + 1) * values.length) / n)
+    return Array.from({ length: Math.max(1, to - from) }, (__, j) => from + j)
+  })
+}
+
+/** The block for a value scaled 0..max. */
+export const blockFor = (value: number, max: number): string =>
+  BLOCKS[Math.min(7, Math.max(0, Math.round((max <= 0 ? 0 : value / max) * 7)))] ?? '▁'
+
+export type Trend = {
+  cells: { char: string; isDrop: boolean }[]
+  min: number
+  current: number
+  peak: number
+  drops: number
+  color: 'green' | 'yellow' | 'red'
+}
+
+/** The sparkline of the context size over the session, `width` columns at most; undefined under 2 samples. */
+export const contextTrend = (stats: Stats, width: number): Trend | undefined => {
+  const h = stats.contextHistory
+  if (h.length < 2) return undefined
+  const max = stats.contextWindow && stats.contextWindow > 0 ? stats.contextWindow : Math.max(...h)
+  const drops = new Set(findDrops(h))
+  const buckets = downsample(h, width)
+  const current = h[h.length - 1] ?? 0
+  return {
+    cells: buckets.map(idx => ({
+      char: blockFor(h[idx[idx.length - 1] ?? 0] ?? 0, max),
+      isDrop: idx.some(i => drops.has(i)),
+    })),
+    min: Math.min(...h),
+    current,
+    peak: Math.max(...h),
+    drops: drops.size,
+    color: usedColor(max > 0 ? (current / max) * 100 : 0),
+  }
+}
+
+export const contextTrendLine = (stats: Stats): string => {
+  const trend = contextTrend(stats, 12)
+  return trend
+    ? `Context trend: ${trend.cells.map(c => c.char).join('')} ${formatTokens(trend.current)} now · peak ${formatTokens(trend.peak)}${trend.drops > 0 ? ` · compacted ${trend.drops}x` : ''}`
+    : 'Context trend: collecting…'
 }

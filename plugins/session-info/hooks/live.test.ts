@@ -121,3 +121,35 @@ test('the Token hogs card shows the subagent share, none yet without subagents',
   expect(await has(/top: Explore "map the repo" 400/)).toBe(true)
   await ui.unmount()
 })
+
+test('the context trend collects, then draws once two samples exist, and marks a compaction', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let tokens = 40_000
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, tokens }, rateLimits: [] } }) as never)
+  on('session.authorize', () => ({ value: null }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('session.messages', () => ({ value: [] }) as never)
+  await $.command.run({ command: 'info', args: '' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+  const got: Record<string, boolean> = {}
+  got.collecting = await has(/collecting…/)
+
+  for (const next of [120_000, 190_000, 50_000]) {
+    tokens = next
+    await clock.advance(3000)
+  }
+  got.caption = await has(/each column = a sample of context size over time/)
+  got.compacted = await has(/compacted ×1/)
+  got.numbers = await has(/min 40\.0k · now 50\.0k · peak 190\.0k/)
+  expect(got).toEqual({ collecting: true, caption: true, compacted: true, numbers: true })
+  await ui.unmount()
+})

@@ -23,6 +23,8 @@ import {
   addMcpTool,
   addSkill,
   addUsage,
+  contextTrend,
+  sampleContext,
   bar,
   cacheHitPercent,
   classifyAuth,
@@ -71,7 +73,7 @@ async function readInto($: EngineInterface, step: string, work: () => Promise<vo
   }
 }
 
-async function refresh($: EngineInterface) {
+async function refresh($: EngineInterface, isTurnEnd = false) {
   const now = await $.clock.now()
   const problems = await Promise.all([
     readInto($, 'usage', async () => {
@@ -83,6 +85,7 @@ async function refresh($: EngineInterface) {
         contextTokens: usage.context.tokens,
         contextWindow: usage.context.window,
       }))
+      await update($, stats, one => sampleContext(one, usage.context.tokens, isTurnEnd))
     }),
     readInto($, 'auth', async () => {
       const auth = await $.session.authorize()
@@ -186,7 +189,7 @@ export const register: Register = on => {
         await update($, stats, one => addAgentTokens(one, agentId, sum))
       }
     }
-    await refresh($)
+    await refresh($, true)
 
     return next(e)
   })
@@ -318,6 +321,26 @@ export const register: Register = on => {
       .sort((a, b) => b.sum - a.sum)
     const shownModels = top(perModel, 4)
     const ctxPct = s.contextTokens !== undefined && s.contextWindow ? (s.contextTokens / s.contextWindow) * 100 : undefined
+    const isRoomyTrend = W >= 56
+    const trend = contextTrend(s, Math.max(8, Math.min(40, isRoomyTrend ? W - labelW - 1 - 36 : W - labelW - 1)))
+    const trendNumbers = trend ? `min ${formatTokens(trend.min)} · now ${formatTokens(trend.current)} · peak ${formatTokens(trend.peak)}` : ''
+    const trendRows = !trend
+      ? [<Text dimColor>{`${padEnd('Trend', labelW)}collecting…`}</Text>]
+      : [
+          <Text>
+            <Text bold>{padEnd('Trend', labelW)}</Text>
+            {trend.cells.map(c => (
+              <Text bold color={trend.color} underline={c.isDrop}>
+                {c.char}
+              </Text>
+            ))}
+            {isRoomyTrend ? <Text dimColor>{`  ${trendNumbers}`}</Text> : null}
+          </Text>,
+          isRoomyTrend ? <Text> </Text> : <Text dimColor>{clip(`${' '.repeat(labelW)}${trendNumbers}`, W)}</Text>,
+          <Text dimColor wrap="wrap">
+            {`each column = a sample of context size over time${trend.drops > 0 ? ` · underlined ↓ compacted ×${trend.drops}` : ''}`}
+          </Text>,
+        ]
     const tokens = card('Tokens', [
       <Box justifyContent="space-between">
         <Text>
@@ -345,6 +368,7 @@ export const register: Register = on => {
         : s.contextTokens !== undefined
           ? [<Text dimColor>{`Context now ${formatInt(s.contextTokens)} (engine)`}</Text>]
           : []),
+      ...(s.contextTokens === undefined ? [] : trendRows),
       ...parts.flatMap(([name, color, n]) =>
         barRows({ label: name, percent: share(n), primary: `${share(n)}%`, secondary: formatTokens(n), labelW }, color),
       ),
@@ -417,9 +441,9 @@ export const register: Register = on => {
       <Text bold>Tips</Text>,
       ...(hints.length === 0
         ? [<Text dimColor>nothing stands out</Text>]
-        : hints.map(h => (
+        : hints.map(hint => (
             <Text wrap="wrap">
-              <Text color={ACCENT}>›</Text> {h}
+              <Text color={ACCENT}>›</Text> {hint}
             </Text>
           ))),
     ])

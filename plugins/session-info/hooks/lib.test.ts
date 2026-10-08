@@ -1,6 +1,12 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  sampleContext,
+  findDrops,
+  downsample,
+  blockFor,
+  contextTrend,
+  contextTrendLine,
   subagentShare,
   startTurn,
   noteTool,
@@ -193,7 +199,7 @@ test('statusDot and formatDuration', () => {
 })
 
 test('textReport is compact, covers every section and works on empty stats', () => {
-  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(11)
+  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(12)
   let s = addUsage(emptyStats(), 'm', usage)
   s = addSkill(s, 'commit')
   s = addMcpTool(s, 'mcp__jira__get_issue')
@@ -356,4 +362,55 @@ test('subagentShare: denominator is main-loop + subagent tokens, top 3, red over
   expect(subagentShare(addAgentTokens(s, 'c', 1))).toMatchObject({ percent: 40.1, isHog: true })
   expect(subagentShare(recordSpawn(emptyStats(), { id: 'z', type: 't', description: '' }, 0))).toMatchObject({ percent: 0, isHog: false, top: [] })
   expect(textReport(addAgentTokens(s, 'c', 1), 0)).toContain('Subagent share: 40.1% of tokens (401 of 1.0k); top: Explore 200, general-purpose 150, Explore 50')
+})
+
+const ctx = (values: number[], window = 200_000) =>
+  values.reduce((s, v) => sampleContext(s, v), { ...emptyStats(), contextWindow: window })
+
+test('context samples: only changes, forced repeats, bounded', () => {
+  let s = sampleContext(emptyStats(), 100)
+  s = sampleContext(s, 100)
+  expect(s.contextHistory).toEqual([100])
+  s = sampleContext(s, 100, true)
+  expect(s.contextHistory).toEqual([100, 100])
+  expect(sampleContext(s, undefined)).toBe(s)
+  let many = emptyStats()
+  for (let i = 0; i < 100; i++) many = sampleContext(many, i)
+  expect(many.contextHistory).toHaveLength(40)
+  expect(many.contextHistory[39]).toBe(99)
+})
+
+test('sparkline scaling 0..window and downsampling keep the last sample', () => {
+  expect(blockFor(0, 100)).toBe('▁')
+  expect(blockFor(50, 100)).toBe('▅')
+  expect(blockFor(100, 100)).toBe('█')
+  expect(blockFor(500, 100)).toBe('█')
+  expect(blockFor(5, 0)).toBe('▁')
+  expect(downsample([1, 2, 3], 5)).toEqual([[0], [1], [2]])
+  const buckets = downsample(Array.from({ length: 10 }, (_, i) => i), 4)
+  expect(buckets).toHaveLength(4)
+  expect(buckets[3]?.slice(-1)).toEqual([9])
+  expect(buckets.flat()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  const t = contextTrend(ctx([0, 100_000, 200_000]), 10)
+  expect(t?.cells.map(c => c.char).join('')).toBe('▁▅█')
+  expect(contextTrend(ctx([1, 2, 3, 4, 5, 6, 7, 8]), 4)?.cells).toHaveLength(4)
+})
+
+test('compaction drops are detected and the trend reports min/current/peak and colour', () => {
+  expect(findDrops([100, 200, 300, 120, 130])).toEqual([3])
+  expect(findDrops([100, 90, 80])).toEqual([])
+  expect(findDrops([0, 5])).toEqual([])
+  const t = contextTrend(ctx([50_000, 150_000, 180_000, 40_000, 60_000]), 10)
+  expect(t).toMatchObject({ min: 40_000, current: 60_000, peak: 180_000, drops: 1, color: 'green' })
+  expect(t?.cells[3]?.isDrop).toBe(true)
+  expect(contextTrend(ctx([100_000, 190_000]), 10)?.color).toBe('red')
+  expect(contextTrend(ctx([100_000, 150_000]), 10)?.color).toBe('yellow')
+})
+
+test('trend needs two samples; the report line says collecting, then the numbers', () => {
+  expect(contextTrend(ctx([100]), 10)).toBeUndefined()
+  expect(contextTrendLine(emptyStats())).toBe('Context trend: collecting…')
+  expect(contextTrendLine(ctx([50_000, 145_000, 180_000, 145_000]))).toBe('Context trend: ▃▆▇▆ 145.0k now · peak 180.0k')
+  expect(contextTrendLine(ctx([180_000, 40_000]))).toContain('compacted 1x')
+  expect(textReport(ctx([1000, 2000]), 0)).toContain('Context trend:')
 })

@@ -51,6 +51,8 @@ export type Stats = {
   tools: Record<string, ToolStat>
   auth: AuthKind
   contextTokens?: number
+  /** context size samples, oldest first, at most 40 */
+  contextHistory: number[]
   contextWindow?: number
   /** why the last refresh could not read something, shown instead of hiding it */
   warn?: string

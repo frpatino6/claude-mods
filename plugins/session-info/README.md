@@ -6,7 +6,7 @@
 
 - **Session**: model, plan badge, spend this session.
 - **Quota**: one bar per rate-limit window (5-hour, weekly) filled with % **used**, coloured by use (green under 60%, yellow 60-85%, red over 85%), with % left and the reset countdown.
-- **Tokens**: total, context-window usage, and per-category and per-model bars (share of all tokens).
+- **Tokens**: total, context-window usage, a context-growth sparkline (one column per sample, scaled 0..window, coloured by the latest value; min/now/peak below it, and an underlined column where the context was compacted), and per-category and per-model bars (share of all tokens).
 - **Token hogs**: what is eating tokens.
   - *Last turns*: latest first, bar = tokens in that turn (cache included), red when over 2x the session average (judged from 3 completed turns), labelled with the prompt snippet and the main tool.
   - *Tools*: one bar per tool (MCP tools grouped per server), sorted by size, top 5. Size is **estimated** as characters of what the tool returned ÷ 4. If result text is unavailable it falls back to each turn's tokens split evenly among the tools it used, and says so in the caption.
