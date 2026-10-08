@@ -1,6 +1,16 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  startTurn,
+  noteTool,
+  finishTurn,
+  groupTool,
+  scanTools,
+  turnRows,
+  toolRows,
+  tips,
+  hogLines,
+  snippet,
   layoutBarRow,
   scanMessages,
   mergeScan,
@@ -182,7 +192,7 @@ test('statusDot and formatDuration', () => {
 })
 
 test('textReport is compact, covers every section and works on empty stats', () => {
-  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(8)
+  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(10)
   let s = addUsage(emptyStats(), 'm', usage)
   s = addSkill(s, 'commit')
   s = addMcpTool(s, 'mcp__jira__get_issue')
@@ -254,4 +264,79 @@ test('layoutBarRow keeps label and primary on the bar row and wraps the secondar
   expect(noSecond.filled).toBe(0)
   expect(noSecond.filled + noSecond.empty).toBeGreaterThanOrEqual(3)
   expect(layoutBarRow({ W: 80, labelW: 8, label: 'x', percent: 250, primary: '1' }).empty).toBe(0)
+})
+
+const turn = (s: ReturnType<typeof emptyStats>, id: string, text: string, tools: string[], tokens: number) => {
+  let next = startTurn(s, id, text)
+  for (const tool of tools) next = noteTool(next, tool)
+  return finishTurn(next, id, tokens)
+}
+
+test('turns: record, label, tools, order and the 2x-average highlight', () => {
+  expect(snippet('  hello\n  world  ')).toBe('hello world')
+  expect(snippet('x'.repeat(100))).toHaveLength(60)
+  let s = emptyStats()
+  s = turn(s, 't1', 'first', ['Read', 'Read'], 1000)
+  s = turn(s, 't2', 'second', [], 1000)
+  s = turn(s, 't3', '', ['mcp__jira__get_issue'], 1000)
+  s = turn(s, 't4', 'big one', ['Bash'], 9000)
+  const rows = turnRows(s, 3)
+  expect(rows.map(r => r.label)).toEqual(['big one', '(continued)', 'second'])
+  expect(rows[0]?.isHog).toBe(true)
+  expect(rows[1]?.isHog).toBe(false)
+  expect(rows[1]?.tool).toBe('mcp:jira')
+  expect(turnRows(s, 4)[3]?.tool).toBe('Read ×2')
+  // fewer than 3 finished turns are never judged
+  expect(turnRows(turn(emptyStats(), 'a', 'x', [], 5), 3)[0]?.isHog).toBe(false)
+  // a tool credits the running turn only
+  expect(noteTool(s, 'Grep').turns[3]?.tools).toEqual(['Bash'])
+  expect(finishTurn(emptyStats(), 'late', 7).turns[0]?.tokens).toBe(7)
+})
+
+test('tools: grouping, result sizes from the transcript, split fallback', () => {
+  expect(groupTool('mcp__jira__get_issue')).toBe('mcp:jira')
+  expect(groupTool('Bash')).toBe('Bash')
+  const big = 'x'.repeat(100_000)
+  const stats = scanTools([
+    { role: 'assistant', text: '', toolUses: [{ tool: 'Read', input: {}, text: big }, { tool: 'Read', input: {}, text: 'abcd' }, { tool: 'mcp__a__b', input: {}, text: 'abcdefgh' }] },
+  ])
+  expect(stats.Read).toEqual({ calls: 2, chars: 100_004, bigResults: 1 })
+  expect(stats['mcp:a']?.chars).toBe(8)
+  const sized = toolRows({ ...emptyStats(), tools: stats })
+  expect(sized.mode).toBe('size')
+  expect(sized.rows[0]).toEqual({ name: 'Read', calls: 2, tokens: 25_001 })
+
+  let s = turn(emptyStats(), 't1', 'a', ['Read', 'Bash'], 1000)
+  s = turn(s, 't2', 'b', ['Read'], 600)
+  const split = toolRows(s)
+  expect(split.mode).toBe('split')
+  expect(split.rows).toEqual([{ name: 'Read', calls: 2, tokens: 1100 }, { name: 'Bash', calls: 1, tokens: 500 }])
+  expect(toolRows(emptyStats())).toEqual({ mode: 'none', rows: [] })
+})
+
+test('tips: each rule fires alone, at most three, and none when nothing stands out', () => {
+  expect(tips(emptyStats())).toEqual([])
+  expect(tips({ ...emptyStats(), contextTokens: 150_000, contextWindow: 200_000 })[0]).toContain('/compact')
+  expect(tips({ ...emptyStats(), contextTokens: 100_000, contextWindow: 200_000 })).toEqual([])
+  expect(tips({ ...emptyStats(), tools: { Read: { calls: 5, chars: 1, bigResults: 3 } } })[0]).toContain('Read returned 3 results')
+  expect(tips({ ...emptyStats(), tools: { Read: { calls: 5, chars: 1, bigResults: 2 } } })).toEqual([])
+  const withAgents = addUsage(emptyStats(), 'm', { input_tokens: 600, output_tokens: 0, cache_read_input_tokens: 400, cache_creation_input_tokens: 0 })
+  const sub = recordSpawn(withAgents, { id: 'a', type: 'Explore', description: 'x' }, 0)
+  expect(tips(addAgentTokens(sub, 'a', 500))[0]).toContain('Subagents used 50%')
+  expect(tips(addAgentTokens(sub, 'a', 100))).toEqual([])
+  let s = emptyStats()
+  for (const [i, t] of [100, 100, 100, 1000].entries()) s = turn(s, `t${i}`, `p${i}`, [], t)
+  expect(tips(s)[0]).toContain('One turn used 1.0k tokens')
+  const cold = addUsage(emptyStats(), 'm', { input_tokens: 90_000, output_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 })
+  expect(tips(cold)[0]).toContain('Cache hit is only 1%')
+  const many = { ...cold, contextTokens: 190_000, contextWindow: 200_000, tools: { Read: { calls: 5, chars: 1, bigResults: 3 } } }
+  expect(tips(many).length).toBeLessThanOrEqual(3)
+})
+
+test('hogLines feed the text report', () => {
+  expect(hogLines(emptyStats())).toEqual(['Token hogs: none yet', 'Tips: nothing stands out'])
+  const s = turn(emptyStats(), 't1', 'a', ['Read'], 2000)
+  const text = textReport(s, 0)
+  expect(text).toContain('Token hogs: Read ~2.0k (1x) [split estimate]')
+  expect(text).toContain('Tips: nothing stands out')
 })

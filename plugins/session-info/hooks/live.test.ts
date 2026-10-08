@@ -67,3 +67,31 @@ test('the timer re-reads the engine while the pane is open and stops when it clo
 
   await ui.unmount()
 })
+
+test('turns and tool calls fill the Token hogs card', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  on('turn.complete', (_$, e) => ({ text: e.answer }) as never)
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+  expect(await has(/no completed turns yet/)).toBe(true)
+  expect(await has(/nothing stands out/)).toBe(true)
+
+  const usage = { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'm' }
+  await $.turn.start({ text: 'refactor the parser', turnId: 'u1' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'c1' } as never)
+  await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'u1', reason: 'answer', usage } as never)
+
+  expect(await has(/refactor the parser/)).toBe(true)
+  expect(await has(/1\.5k/)).toBe(true)
+  expect(await has(/split evenly/)).toBe(true)
+  await ui.unmount()
+})

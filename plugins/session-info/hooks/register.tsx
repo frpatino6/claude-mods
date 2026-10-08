@@ -4,6 +4,14 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Stats } from '../types'
 import {
   addAgentTokens,
+  finishTurn,
+  hogLines,
+  noteTool,
+  scanTools,
+  startTurn,
+  tips,
+  toolRows,
+  turnRows,
   addCommand,
   agentTypeCounts,
   formatDuration,
@@ -85,7 +93,7 @@ async function refresh($: EngineInterface) {
     }),
     readInto($, 'transcript', async () => {
       const rows = await $.session.messages()
-      await update($, stats, one => mergeScan(one, scanMessages(rows)))
+      await update($, stats, one => ({ ...mergeScan(one, scanMessages(rows)), tools: scanTools(rows) }))
     }),
   ])
   const warn = problems.filter(Boolean).join('; ') || undefined
@@ -140,7 +148,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    await update($, stats, one => addMcpTool(one, e.tool))
+    await update($, stats, one => noteTool(addMcpTool(one, e.tool), e.tool))
 
     return next(e)
   })
@@ -158,10 +166,20 @@ export const register: Register = on => {
     return started
   })
 
+  on('turn.start', async ($, e, next) => {
+    await update($, stats, one => startTurn(one, e.turnId, e.text))
+
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const { usage, agentId } = e
     if (usage) {
       await update($, stats, one => addUsage(one, usage.model, usage))
+      if (!agentId) {
+        const turnTokens = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+        await update($, stats, one => finishTurn(one, e.turnId, turnTokens))
+      }
       if (agentId) {
         const sum = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
         await update($, stats, one => addAgentTokens(one, agentId, sum))
@@ -340,6 +358,49 @@ export const register: Register = on => {
       shownModels.more > 0 ? <Text dimColor>+{shownModels.more} more</Text> : <Text> </Text>,
     ])
 
+    // 3b. Token hogs
+    const hogLabelW = W >= 56 ? 24 : 14
+    const turns = turnRows(s, W >= 44 ? 6 : 4)
+    const turnMax = Math.max(1, ...turns.map(t => t.tokens))
+    const toolsView = toolRows(s)
+    const toolTop = top(toolsView.rows, 5)
+    const toolMax = Math.max(1, ...toolTop.shown.map(t => t.tokens))
+    const hints = tips(s)
+    const hogs = card('Token hogs', [
+      <Text dimColor>Last turns: bar = tokens in that turn (cache included) · red = over 2x the session average</Text>,
+      ...(turns.length === 0
+        ? [<Text dimColor>no completed turns yet</Text>]
+        : turns.flatMap(t =>
+            barRows(
+              { label: t.label, percent: (t.tokens / turnMax) * 100, primary: formatTokens(t.tokens), secondary: t.tool, labelW: hogLabelW },
+              t.isHog ? 'red' : ACCENT,
+            ),
+          )),
+      <Text> </Text>,
+      <Text dimColor wrap="wrap">
+        {toolsView.mode === 'size'
+          ? 'Tools: bar = size of what they returned (≈ characters ÷ 4, an estimate)'
+          : toolsView.mode === 'split'
+            ? "Tools: result sizes aren't available, so bar = each turn's tokens split evenly among the tools it used (approximation)"
+            : 'Tools: none used yet'}
+      </Text>,
+      ...toolTop.shown.flatMap(t =>
+        barRows(
+          { label: t.name, percent: (t.tokens / toolMax) * 100, primary: `~${formatTokens(t.tokens)}`, secondary: `${t.calls} call${t.calls === 1 ? '' : 's'}`, labelW },
+          SECOND,
+        ),
+      ),
+      toolTop.more > 0 ? <Text dimColor>+{toolTop.more} more</Text> : <Text> </Text>,
+      <Text bold>Tips</Text>,
+      ...(hints.length === 0
+        ? [<Text dimColor>nothing stands out</Text>]
+        : hints.map(h => (
+            <Text wrap="wrap">
+              <Text color={ACCENT}>›</Text> {h}
+            </Text>
+          ))),
+    ])
+
     // 4. Activity
     const isWide = W >= 50
     const colW = isWide ? Math.floor((W - 4) / 3) : W
@@ -453,6 +514,7 @@ export const register: Register = on => {
         {header}
         {quota}
         {tokens}
+        {hogs}
         {activity}
         {subagents}
         <Text dimColor>refreshes every 3s while open</Text>

@@ -19,6 +19,24 @@ export type AgentRec = {
   endedAt?: number
 }
 
+export type TurnRec = {
+  id: string
+  /** prompt snippet, '' for a continuation */
+  label: string
+  /** tokens processed in the turn (input + output + cache), 0 until it completes */
+  tokens: number
+  /** tool names called while it ran, in order */
+  tools: string[]
+}
+
+export type ToolStat = {
+  calls: number
+  /** characters the tool's results held, as the model read them */
+  chars: number
+  /** results of 20k+ tokens (estimated) */
+  bigResults: number
+}
+
 export type AuthKind = 'bearer' | 'api-key' | 'none' | 'unknown'
 
 export type Stats = {
@@ -29,6 +47,8 @@ export type Stats = {
   rateLimits: RateLimit[]
   costUsd?: number
   agents: AgentRec[]
+  turns: TurnRec[]
+  tools: Record<string, ToolStat>
   auth: AuthKind
   contextTokens?: number
   contextWindow?: number

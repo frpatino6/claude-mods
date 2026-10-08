@@ -1,4 +1,4 @@
-import type { AgentRec, AgentStatus, AuthKind, RateLimit, Stats, TokenCounts } from '../types'
+import type { AgentRec, AgentStatus, AuthKind, RateLimit, Stats, TokenCounts, ToolStat, TurnRec } from '../types'
 
 export const emptyStats = (): Stats => ({
   models: {},
@@ -7,6 +7,8 @@ export const emptyStats = (): Stats => ({
   commands: {},
   rateLimits: [],
   agents: [],
+  turns: [],
+  tools: {},
   auth: 'unknown',
 })
 
@@ -364,12 +366,17 @@ export const textReport = (stats: Stats, now: number): string => {
     `Skills: ${listText(ranked(stats.skills))}`,
     `MCP: ${listText(servers)}`,
     `Commands: ${listText(ranked(stats.commands).map(([name, n]): [string, number] => [`/${name}`, n]))}`,
+    ...hogLines(stats),
     `Subagents: ${stats.agents.length === 0 ? 'none yet' : `${stats.agents.length} (${running} running) - ${listText(agentTypeCounts(stats.agents))}`}`,
   ]
   return (stats.warn ? [...lines, `Note: ${stats.warn}`] : lines).join('\n')
 }
 
-export type Row = { role: 'user' | 'assistant'; text: string; toolUses: { tool: string; input: Record<string, unknown> }[] }
+export type Row = {
+  role: 'user' | 'assistant'
+  text: string
+  toolUses: { tool: string; input: Record<string, unknown>; text?: string }[]
+}
 
 export type Scan = {
   skills: Record<string, number>
@@ -457,4 +464,166 @@ export const layoutBarRow = (o: BarRowOptions): BarRow => {
     inline: isRoomy ? secondary : '',
     wrapped: isRoomy ? '' : secondary,
   }
+}
+
+// ---- Token hogs -------------------------------------------------------------
+
+const KEEP_TURNS = 30
+export const HOG_FACTOR = 2
+export const BIG_RESULT_TOKENS = 20_000
+
+/** A one-line snippet of a prompt: whitespace folded, cut at 60 characters. */
+export const snippet = (text: string): string => {
+  const one = text.replace(/\s+/g, ' ').trim()
+  return one.length > 60 ? `${one.slice(0, 59)}…` : one
+}
+
+export const startTurn = (stats: Stats, id: string, text: string): Stats =>
+  stats.turns.some(t => t.id === id)
+    ? stats
+    : { ...stats, turns: [...stats.turns, { id, label: snippet(text), tokens: 0, tools: [] }].slice(-KEEP_TURNS) }
+
+/** Credits a tool call to the turn that is running (the latest one still at 0 tokens). */
+export const noteTool = (stats: Stats, tool: string): Stats => {
+  const at = stats.turns.length - 1
+  const last = stats.turns[at]
+  return !last || last.tokens > 0
+    ? stats
+    : { ...stats, turns: stats.turns.map((t, i) => (i === at ? { ...t, tools: [...t.tools, tool] } : t)) }
+}
+
+export const finishTurn = (stats: Stats, id: string, tokens: number): Stats => {
+  const known = stats.turns.some(t => t.id === id)
+  const turns: TurnRec[] = known
+    ? stats.turns.map(t => (t.id === id ? { ...t, tokens } : t))
+    : [...stats.turns, { id, label: '', tokens, tools: [] }].slice(-KEEP_TURNS)
+  return { ...stats, turns }
+}
+
+/** `mcp__jira__get_issue` -> `mcp:jira`; every other name as it is. */
+export const groupTool = (tool: string): string => {
+  const match = /^mcp__(.+?)__.+$/.exec(tool)
+  return match ? `mcp:${match[1]}` : tool
+}
+
+/** What each tool returned, per transcript: calls, characters, and results of 20k+ tokens. */
+export const scanTools = (rows: Row[]): Record<string, ToolStat> => {
+  const out: Record<string, ToolStat> = {}
+  for (const row of rows) {
+    for (const use of row.toolUses) {
+      const key = groupTool(use.tool)
+      const had = out[key] ?? { calls: 0, chars: 0, bigResults: 0 }
+      const chars = use.text?.length ?? 0
+      out[key] = {
+        calls: had.calls + 1,
+        chars: had.chars + chars,
+        bigResults: had.bigResults + (chars / 4 >= BIG_RESULT_TOKENS ? 1 : 0),
+      }
+    }
+  }
+  return out
+}
+
+const finishedTurns = (stats: Stats): TurnRec[] => stats.turns.filter(t => t.tokens > 0)
+
+export const averageTurn = (stats: Stats): number => {
+  const done = finishedTurns(stats)
+  return done.length === 0 ? 0 : done.reduce((a, t) => a + t.tokens, 0) / done.length
+}
+
+export type TurnRow = { label: string; tokens: number; tool: string; isHog: boolean }
+
+/** Latest first. A turn is a hog when it is over twice the session average (needs 3 finished turns). */
+export const turnRows = (stats: Stats, n: number): TurnRow[] => {
+  const avg = averageTurn(stats)
+  const isJudged = finishedTurns(stats).length >= 3
+  return finishedTurns(stats)
+    .slice(-n)
+    .reverse()
+    .map(t => {
+      const counts = ranked(t.tools.reduce<Record<string, number>>((all, tool) => ({ ...all, [groupTool(tool)]: (all[groupTool(tool)] ?? 0) + 1 }), {}))
+      const first = counts[0]
+      return {
+        label: t.label || '(continued)',
+        tokens: t.tokens,
+        tool: first ? (first[1] > 1 ? `${first[0]} ×${first[1]}` : first[0]) : '',
+        isHog: isJudged && avg > 0 && t.tokens > HOG_FACTOR * avg,
+      }
+    })
+}
+
+export type ToolRow = { name: string; calls: number; tokens: number }
+
+export type ToolRows = {
+  /** size: tokens estimated from result text (chars/4); split: turn tokens divided among the tools it used; none: nothing yet */
+  mode: 'size' | 'split' | 'none'
+  rows: ToolRow[]
+}
+
+export const toolRows = (stats: Stats): ToolRows => {
+  const sized = Object.entries(stats.tools).filter(([, t]) => t.chars > 0)
+  if (sized.length > 0) {
+    return {
+      mode: 'size',
+      rows: sized
+        .map(([name, t]): ToolRow => ({ name, calls: t.calls, tokens: Math.round(t.chars / 4) }))
+        .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name)),
+    }
+  }
+  const split: Record<string, ToolRow> = {}
+  for (const turn of finishedTurns(stats)) {
+    if (turn.tools.length === 0) continue
+    const share = turn.tokens / turn.tools.length
+    for (const tool of turn.tools) {
+      const key = groupTool(tool)
+      const had = split[key] ?? { name: key, calls: 0, tokens: 0 }
+      split[key] = { name: key, calls: had.calls + 1, tokens: had.tokens + share }
+    }
+  }
+  const rows = Object.values(split)
+    .map(r => ({ ...r, tokens: Math.round(r.tokens) }))
+    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
+  return rows.length === 0 ? { mode: 'none', rows: [] } : { mode: 'split', rows }
+}
+
+/** Up to three plain-language hints; empty when nothing stands out. */
+export const tips = (stats: Stats): string[] => {
+  const out: string[] = []
+  if (stats.contextTokens !== undefined && stats.contextWindow) {
+    const used = (stats.contextTokens / stats.contextWindow) * 100
+    if (used > 70) out.push(`Context is ${Math.round(used)}% full: /compact (or /clear) will shrink what every turn re-sends.`)
+  }
+  for (const [name, t] of Object.entries(stats.tools).sort((a, b) => b[1].bigResults - a[1].bigResults)) {
+    if (t.bigResults >= 3) {
+      out.push(`${name} returned ${t.bigResults} results over 20k tokens: read by ranges or narrow the output.`)
+      break
+    }
+  }
+  const total = sumTokens(stats)
+  const all = total.input + total.output + total.cacheRead + total.cacheWrite
+  const agentTokens = stats.agents.reduce((a, one) => a + one.tokens, 0)
+  if (all > 0 && agentTokens / all > 0.4) {
+    out.push(`Subagents used ${Math.round((agentTokens / all) * 100)}% of the tokens: check they need that much context.`)
+  }
+  const avg = averageTurn(stats)
+  const biggest = [...finishedTurns(stats)].sort((a, b) => b.tokens - a.tokens)[0]
+  if (biggest && finishedTurns(stats).length >= 3 && avg > 0 && biggest.tokens > 3 * avg) {
+    out.push(`One turn used ${formatTokens(biggest.tokens)} tokens (${(biggest.tokens / avg).toFixed(1)}x the average): ${biggest.label ? `"${clip(biggest.label, 30)}"` : 'a continuation'}.`)
+  }
+  const hit = cacheHitPercent(total)
+  if (hit !== undefined && hit < 20 && total.input + total.cacheRead + total.cacheWrite > 20_000) {
+    out.push(`Cache hit is only ${hit}%: frequent edits to early context (or idle gaps) make every turn re-read at full price.`)
+  }
+  return out.slice(0, 3)
+}
+
+/** Compact lines for the plain-text report: the top three hogs, then the tips. */
+export const hogLines = (stats: Stats): string[] => {
+  const { mode, rows } = toolRows(stats)
+  const hogs =
+    rows.length === 0
+      ? 'none yet'
+      : `${rows.slice(0, 3).map(r => `${r.name} ~${formatTokens(r.tokens)} (${r.calls}x)`).join(', ')}${mode === 'split' ? ' [split estimate]' : ' [result size est.]'}`
+  const found = tips(stats)
+  return [`Token hogs: ${hogs}`, `Tips: ${found.length === 0 ? 'nothing stands out' : found.join(' ')}`]
 }
