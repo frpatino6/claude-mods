@@ -64,6 +64,8 @@ export type Stats = {
   costUsd?: number
   agents: AgentRec[]
   turns: TurnRec[]
+  /** how many events the mod has actually seen, to tell "no usage" from "no events" */
+  diag?: { turnEvents: number; withUsage: number; measures: number }
   shell: ShellEntry[]
   /** bumped by the refresh while a command runs, so elapsed times redraw */
   tick?: number

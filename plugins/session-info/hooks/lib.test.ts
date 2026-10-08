@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  bumpDiag,
+  diagNote,
   redact,
   commandLine,
   classifyBash,
@@ -487,4 +489,13 @@ test('shell history is bounded to 50', () => {
   for (let i = 0; i < 70; i++) s = startShell(s, { id: `c${i}`, command: `echo ${i}` }, i)
   expect(s.shell).toHaveLength(50)
   expect(s.shell[49]?.id).toBe('c69')
+})
+
+test('diagnostics count events and surface in the report when tokens read 0', () => {
+  expect(diagNote(emptyStats())).toBe('turn events seen: 0, with usage: 0, session measures: 0')
+  let s = bumpDiag(bumpDiag(bumpDiag(emptyStats(), 'turnEvents'), 'turnEvents'), 'withUsage')
+  s = bumpDiag(s, 'measures')
+  expect(diagNote(s)).toBe('turn events seen: 2, with usage: 1, session measures: 1')
+  expect(textReport(s, 0)).toContain('Tokens: 0 total (in 0, out 0, cache read 0, cache write 0) [turn events seen: 2, with usage: 1, session measures: 1]')
+  expect(textReport(addUsage(s, 'm', usage), 0)).not.toContain('[turn events seen')
 })

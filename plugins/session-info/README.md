@@ -32,6 +32,8 @@ The plan is inferred from what the API reports. Nothing is invented; unavailable
 
 ## Limitations
 
+- If `Tokens` reads 0, the report/pane shows how many turn events the mod actually received (`turn events seen: N, with usage: M, session measures: K`), to tell "no events" from "events without usage".
+
 - Token hogs: per-turn tokens count only turns completed since the mod loaded; tool sizes are a characters÷4 estimate, not exact tokens; in split mode the attribution is an even split, not a measurement.
 - The engine exposes no cumulative token total, only the current context size. Token totals come from turns counted since the mod loaded.
 - Subagent duration is measured by the mod; a subagent that disappears from the engine's list while running is shown as done (a failure then cannot be told apart).

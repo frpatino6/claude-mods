@@ -360,7 +360,7 @@ export const textReport = (stats: Stats, now: number): string => {
   const running = stats.agents.filter(a => !isFinished(a.status)).length
   const lines = [
     `Session info - ${balance.plan}${topModel(stats) ? ` - ${topModel(stats)}` : ''}`,
-    `Tokens: ${formatInt(all)} total (in ${formatTokens(total.input)}, out ${formatTokens(total.output)}, cache read ${formatTokens(total.cacheRead)}, cache write ${formatTokens(total.cacheWrite)})`,
+    `Tokens: ${formatInt(all)} total (in ${formatTokens(total.input)}, out ${formatTokens(total.output)}, cache read ${formatTokens(total.cacheRead)}, cache write ${formatTokens(total.cacheWrite)})${all === 0 ? ` [${diagNote(stats)}]` : ''}`,
     ...(stats.contextTokens === undefined
       ? []
       : [`Context now: ${formatInt(stats.contextTokens)}${stats.contextWindow ? ` / ${formatInt(stats.contextWindow)}` : ''} tokens (engine)`]),
@@ -852,4 +852,17 @@ export const shellLine = (stats: Stats): string => {
   const last = recentShell(stats, 3)
   const text = last.map(c => `${statusMark(c).icon} ${formatDuration(shellDuration(c, 0) || 0)} $ ${clip(c.command, 40)}`).join(' | ')
   return `Terminal: ${running} running; ${stats.shell.length} commands${last.length > 0 ? `; last: ${text}` : ''}`
+}
+
+// ---- Diagnostics ------------------------------------------------------------
+
+export const bumpDiag = (stats: Stats, key: 'turnEvents' | 'withUsage' | 'measures'): Stats => {
+  const had = stats.diag ?? { turnEvents: 0, withUsage: 0, measures: 0 }
+  return { ...stats, diag: { ...had, [key]: had[key] + 1 } }
+}
+
+/** Why the token totals may read 0: how many turn events arrived and how many carried usage. */
+export const diagNote = (stats: Stats): string => {
+  const d = stats.diag ?? { turnEvents: 0, withUsage: 0, measures: 0 }
+  return `turn events seen: ${d.turnEvents}, with usage: ${d.withUsage}, session measures: ${d.measures}`
 }

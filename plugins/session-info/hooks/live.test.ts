@@ -212,3 +212,25 @@ test('Bash calls show as running, then recent with status, duration, redacted co
   expect(await has(/│ nope/)).toBe(true)
   await ui.unmount()
 })
+
+test('the context trend fills from session.measure alone: no /info, no timer, no turn.complete', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('session.measure', (_$, e) => ({ changed: e.changed }) as never)
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+
+  for (const tokens of [60_000, 120_000, 170_048]) {
+    await $.session.measure({ context: { window: 200_000, tokens }, rateLimits: [], changed: ['context'] } as never)
+  }
+  expect(await has(/each column = a sample of context size over time/)).toBe(true)
+  expect(await has(/min 60\.0k · now 170\.0k · peak 170\.0k/)).toBe(true)
+  expect(await has(/turn events seen: 0, with usage: 0, session measures: 3/)).toBe(true)
+  await ui.unmount()
+})

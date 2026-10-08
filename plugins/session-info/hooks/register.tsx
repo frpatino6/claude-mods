@@ -5,6 +5,8 @@ import type { Stats } from '../types'
 import type { BashResult } from './lib'
 import {
   addAgentTokens,
+  bumpDiag,
+  diagNote,
   finishShell,
   isRunning,
   recentShell,
@@ -82,6 +84,18 @@ async function readInto($: EngineInterface, step: string, work: () => Promise<vo
   } catch (error) {
     return `${step}: ${error instanceof Error ? error.message : String(error)}`
   }
+}
+
+// Samples the context size outside the 3s timer, so the trend also fills while the pane is closed.
+let lastSampleAt = 0
+async function sampleNow($: EngineInterface) {
+  try {
+    const now = await $.clock.now()
+    if (now - lastSampleAt < 2000) return
+    lastSampleAt = now
+    const usage = await $.session.usage()
+    await update($, stats, one => ({ ...sampleContext(one, usage.context.tokens), contextTokens: usage.context.tokens, contextWindow: usage.context.window }))
+  } catch {}
 }
 
 async function refresh($: EngineInterface, isTurnEnd = false) {
@@ -165,6 +179,7 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     await update($, stats, one => noteTool(addMcpTool(one, e.tool), e.tool))
+    void sampleNow($)
     if (e.tool !== 'Bash') return next(e)
 
     const id = e.tool_use_id
@@ -195,15 +210,24 @@ export const register: Register = on => {
     return started
   })
 
+  on('prompt.submit', async ($, e, next) => {
+    void sampleNow($)
+
+    return next(e)
+  })
+
   on('turn.start', async ($, e, next) => {
     await update($, stats, one => startTurn(one, e.turnId, e.text))
+    void sampleNow($)
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const { usage, agentId } = e
+    await update($, stats, one => bumpDiag(one, 'turnEvents'))
     if (usage) {
+      await update($, stats, one => bumpDiag(one, 'withUsage'))
       await update($, stats, one => addUsage(one, usage.model, usage))
       if (!agentId) {
         const turnTokens = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
@@ -220,7 +244,13 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    await update($, stats, one => ({ ...one, rateLimits: e.rateLimits, costUsd: e.cost?.usd }))
+    await update($, stats, one => ({
+      ...sampleContext(bumpDiag(one, 'measures'), e.context.tokens),
+      rateLimits: e.rateLimits,
+      costUsd: e.cost?.usd,
+      contextTokens: e.context.tokens ?? one.contextTokens,
+      contextWindow: e.context.window,
+    }))
 
     return next(e)
   })
@@ -404,7 +434,7 @@ export const register: Register = on => {
               barRows({ label: m.name, percent: share(m.sum), primary: `${share(m.sum)}%`, secondary: formatTokens(m.sum), labelW }, ACCENT),
             ),
           ]
-        : [<Text dimColor>no turns counted yet</Text>]),
+        : [<Text dimColor>{all === 0 ? `no turns counted yet (${diagNote(s)})` : 'no turns counted yet'}</Text>]),
       shownModels.more > 0 ? <Text dimColor>+{shownModels.more} more</Text> : <Text> </Text>,
     ])
 
