@@ -1,0 +1,6 @@
+{
+  "name": "template",
+  "version": "0.1.0",
+  "description": "Starting point for a new mod: one slash command and its test",
+  "author": { "name": "fernando" }
+}

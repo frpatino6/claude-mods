@@ -1,0 +1,13 @@
+{
+  "name": "fernando-mods",
+  "owner": {
+    "name": "fernando"
+  },
+  "description": "Local Claude Code mods by fernando",
+  "plugins": [
+    {
+      "name": "session-info",
+      "source": "./plugins/session-info"
+    }
+  ]
+}
