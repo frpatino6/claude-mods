@@ -51,6 +51,8 @@ export type ShellEntry = {
   exit?: number
   /** last output lines, redacted; empty when the result carried no output */
   tail: string[]
+  /** stdout then stderr as the tool returned them, redacted and capped at 20k chars; '' while running */
+  log: string
 }
 
 export type AuthKind = 'bearer' | 'api-key' | 'none' | 'unknown'
@@ -81,6 +83,6 @@ export type Stats = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'session-info': { stats: Stats }
+    'session-info': { stats: Stats; expanded: string | null }
   }
 }

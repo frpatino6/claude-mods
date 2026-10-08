@@ -8,6 +8,10 @@ import {
   bumpDiag,
   diagNote,
   finishShell,
+  logLines,
+  LOG_LINES,
+  toggleExpanded,
+  wrapText,
   isRunning,
   recentShell,
   runningShell,
@@ -71,6 +75,7 @@ const THIRD = 'inactive'
 const FOURTH = 'subtle'
 const COMMAND = 'info'
 const stats = atom({ plugin: 'session-info', key: 'stats' } as const, emptyStats())
+const expanded = atom({ plugin: 'session-info', key: 'expanded' } as const, null as string | null)
 
 const REFRESH_MS = 3000
 let stopTimer: (() => void) | undefined
@@ -256,8 +261,9 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const s: Stats = await read($, stats)
+    const open = await read($, expanded)
     const columns = e.viewport?.columns ?? 60
     const W = Math.max(26, columns - 5) // text room inside a card: border + padding both sides
     const total = sumTokens(s)
@@ -510,6 +516,35 @@ export const register: Register = on => {
     const longestCmd = Math.max(1, ...recent.map(c => shellDuration(c, clockNow)))
     const totals = shellTotals(s, clockNow)
     const lastOut = recent.find(c => c.tail.length > 0)
+    const rowLabel = (c: (typeof live)[number], index: number, lead: string) =>
+      clip(`${open === c.id ? '▾' : '▸'} ${lead}$ ${c.command}`, Math.max(12, W - (index < 9 ? 5 : 2)))
+    const detail = (c: (typeof live)[number]) => {
+      if (open !== c.id) return []
+      const mark = statusMark(c)
+      const running = c.status === 'running'
+      const out = logLines(c.log, W >= 44 ? LOG_LINES : 20)
+      return [
+        <Box flexDirection="column" paddingLeft={2}>
+          {c.description ? <Text bold wrap="wrap">{c.description}</Text> : null}
+          {wrapText(c.full || c.command, W - 4, 6).map((line, i) => (
+            <Text>
+              <Text dimColor>{i === 0 ? '$ ' : '  '}</Text>
+              {line}
+            </Text>
+          ))}
+          <Text bold color={running ? 'yellow' : mark.isBad ? 'red' : undefined}>
+            {running ? `${spinner(clockNow)} running · ${formatDuration(shellDuration(c, clockNow))}` : `${mark.icon} ${mark.word} · ${formatDuration(shellDuration(c, clockNow))}`}
+          </Text>
+          {running ? (
+            <Text dimColor>output appears when the command finishes</Text>
+          ) : out.length === 0 ? (
+            <Text dimColor>no output</Text>
+          ) : (
+            out.map(line => <Text dimColor>{clip(`│ ${line}`, W - 2)}</Text>)
+          )}
+        </Box>,
+      ]
+    }
     const terminal = card('Terminal', [
       s.shell.length === 0 ? (
         <Text dimColor>no commands yet</Text>
@@ -525,31 +560,45 @@ export const register: Register = on => {
       <Text dimColor wrap="wrap">
         Bar = duration relative to the longest · red = failed · yellow = over 30s · exit codes are read from the result text, background shells are not listed, times are measured by this mod
       </Text>,
+      <Text dimColor wrap="wrap">
+        {`click a command (or press its number) to see its output`}
+      </Text>,
       ...(live.length > 0 ? [<Text bold>Running now</Text>] : []),
-      ...live.map(c => (
-        <Text>
-          <Text bold color="yellow">{spinner(clockNow)}</Text>
-          <Text bold>{` ${padStart(formatDuration(shellDuration(c, clockNow)), 6)} `}</Text>
-          <Text>{clip(`$ ${c.command}`, Math.max(8, W - 10))}</Text>
-        </Text>
-      )),
+      ...live.flatMap((c, i) => [
+        <Box>
+          <Button
+            key={`cmd-${c.id}`}
+            label={rowLabel(c, i, `${spinner(clockNow)} ${padStart(formatDuration(shellDuration(c, clockNow)), 6)} `)}
+            hotkey={String(i + 1)}
+            plain
+            onPress={() => update($, expanded, cur => toggleExpanded(cur, c.id))}
+          />
+        </Box>,
+        ...detail(c),
+      ]),
       ...(recent.length > 0 ? [<Text bold>Recent</Text>] : []),
-      ...recent.flatMap(c => {
+      ...recent.flatMap((c, j) => {
         const mark = statusMark(c)
         const ms = shellDuration(c, clockNow)
         const color = mark.isBad ? 'red' : ms > LONG_COMMAND_MS ? 'yellow' : ACCENT
         return [
-          <Text>
-            <Text bold color={mark.isBad ? 'red' : undefined}>{`${mark.icon} `}</Text>
-            <Text>{clip(`$ ${c.command}`, Math.max(8, W - 3))}</Text>
-          </Text>,
+          <Box>
+            <Button
+              key={`cmd-${c.id}`}
+              label={rowLabel(c, live.length + j, `${mark.icon} `)}
+              hotkey={String(live.length + j + 1)}
+              plain
+              onPress={() => update($, expanded, cur => toggleExpanded(cur, c.id))}
+            />
+          </Box>,
           ...barRows(
             { label: `${mark.word}`, percent: (ms / longestCmd) * 100, primary: formatDuration(ms), secondary: c.description ?? '', labelW },
             color,
           ),
+          ...detail(c),
         ]
       }),
-      ...(lastOut
+      ...(lastOut && open === null
         ? [
             <Text dimColor>last output (stdout{lastOut.status === 'failed' ? ' + stderr' : ''}, redacted)</Text>,
             ...lastOut.tail.map(line => <Text dimColor>{clip(`│ ${line}`, W)}</Text>),

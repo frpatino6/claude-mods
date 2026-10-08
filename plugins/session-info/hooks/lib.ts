@@ -736,6 +736,8 @@ export const contextTrendLine = (stats: Stats): string => {
 // ---- Terminal ----------------------------------------------------------------
 
 const KEEP_SHELL = 50
+export const LOG_CAP = 20_000
+export const LOG_LINES = 40
 export const LONG_COMMAND_MS = 30_000
 
 /** Masks obvious secrets (the repo is public, panes get screenshotted). */
@@ -755,6 +757,48 @@ export const commandLine = (command: string): string => {
   return lines.length > 1 ? `${first} …(+${lines.length - 1})` : first
 }
 
+/** stdout, then stderr under a divider, redacted, and capped to 20k chars (head and tail kept). */
+export const buildLog = (stdout: string, stderr: string): string => {
+  const parts = [stdout.replace(/\s+$/, ''), stderr.trim() === '' ? '' : `── stderr ──\n${stderr.replace(/\s+$/, '')}`].filter(Boolean)
+  const text = redact(parts.join('\n'))
+  return text.length <= LOG_CAP
+    ? text
+    : `${text.slice(0, LOG_CAP / 2)}\n… output truncated …\n${text.slice(text.length - LOG_CAP / 2)}`
+}
+
+/** At most `max` lines: the head and the tail with a `… N more lines …` marker between. */
+export const logLines = (log: string, max: number): string[] => {
+  const lines = log === '' ? [] : log.split('\n')
+  if (lines.length <= max) return lines
+  const head = Math.ceil((max - 1) / 2)
+  const tail = max - 1 - head
+  return [...lines.slice(0, head), `… ${lines.length - head - tail} more lines …`, ...lines.slice(lines.length - tail)]
+}
+
+/** Wraps text to `width` columns over at most `maxLines` lines, keeping its own line breaks; the last line ends in … when cut. */
+export const wrapText = (text: string, width: number, maxLines: number): string[] => {
+  const w = Math.max(4, width)
+  const lines: string[] = []
+  for (const raw of text.split('\n')) {
+    let rest = raw.replace(/\s+$/, '')
+    if (rest === '') continue
+    while (rest.length > w) {
+      const cut = rest.lastIndexOf(' ', w)
+      const at = cut > w / 2 ? cut : w
+      lines.push(rest.slice(0, at).replace(/\s+$/, ''))
+      rest = rest.slice(at).replace(/^\s+/, '')
+    }
+    lines.push(rest)
+  }
+  if (lines.length <= maxLines) return lines
+  const kept = lines.slice(0, maxLines)
+  kept[maxLines - 1] = `${clip(kept[maxLines - 1] ?? '', w - 1).replace(/…$/, '')}…`
+  return kept
+}
+
+/** Click or key on a row: opens it, closes it when it is the open one (so only one is open). */
+export const toggleExpanded = (current: string | null, id: string): string | null => (current === id ? null : id)
+
 export type BashResult = {
   isError?: boolean
   deny?: string
@@ -763,7 +807,7 @@ export type BashResult = {
 }
 
 /** Reads what the engine exposes of a finished Bash call. The exit code is only what the result text says. */
-export const classifyBash = (ran: BashResult): { status: ShellStatus; exit?: number; tail: string[] } => {
+export const classifyBash = (ran: BashResult): { status: ShellStatus; exit?: number; tail: string[]; log: string } => {
   const r = ran.result
   const text = ran.text ?? ''
   const code = /exit code:?\s*(-?\d+)/i.exec(text)
@@ -786,7 +830,7 @@ export const classifyBash = (ran: BashResult): { status: ShellStatus; exit?: num
     .filter(Boolean)
     .slice(-3)
     .map(l => clip(redact(l), 160))
-  return { status, exit, tail }
+  return { status, exit, tail, log: buildLog(r?.stdout ?? '', r?.stderr ?? '') }
 }
 
 export const startShell = (
@@ -800,7 +844,7 @@ export const startShell = (
         ...stats,
         shell: [
           ...stats.shell,
-          { id: call.id, command: commandLine(call.command), description: call.description ? redact(call.description) : undefined, startedAt: now, status: 'running' as const, tail: [] },
+          { id: call.id, command: commandLine(call.command), description: call.description ? redact(call.description) : undefined, startedAt: now, status: 'running' as const, tail: [], log: '' },
         ].slice(-KEEP_SHELL),
       }
 

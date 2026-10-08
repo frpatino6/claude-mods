@@ -1,6 +1,6 @@
 # session-info
 
-> 0.4.3 behaves exactly like 0.4.1 (it reverts the 0.4.2 single-panel Terminal card; the version is higher only so installed copies update).
+> 0.4.3 behaved like 0.4.1 (it reverted the 0.4.2 single-panel Terminal card; the version was higher only so installed copies update). 0.5.0 adds the clickable command log.
 
 `/info` opens a pane (and prints a plain-text report, so you see output even if the pane cannot draw). The pane refreshes every 3 seconds while open.
 
@@ -17,6 +17,7 @@
   - The text report carries the top 3 hogs and the tips too.
 - **Terminal**: the Bash commands the agent runs. *Running now* (spinner, elapsed time that ticks with the refresh, `$ command`), *Recent* (up to 8: ✓ ok / ✗ exit N / ⏱ timeout, duration bar scaled to the longest, red when failed, yellow over 30s, description), a totals line, and the last 3 lines of the latest command's output when the result carries output. Commands and output are redacted (tokens, API keys, `Authorization` headers, `KEY=`/`TOKEN=`/`SECRET=`/`PASSWORD=` values, URL credentials). History is the last 50.
   - Approximated: durations are measured by the mod around the call; exit codes come from the result text ("Exit code N"); background shells are not listed (a started one shows as *background*); commands that ran before the mod loaded are not shown.
+  - *Command log (0.5.0)*: every command row (running or recent) is a button: **click it**, or press its number key (1-9) while the pane has focus, to expand that command's own log right under it: description, the full command wrapped, status and duration, and its stdout and stderr as the tool returned them (up to 40 lines, 20 when narrow, head + tail with `… N more lines …`; the stored log is capped at 20k characters, secrets redacted). One row is open at a time; pressing it again collapses it. A running command shows `output appears when the command finishes` and fills in when it ends. Logs live only in the mod's session state for the last 50 commands, never written anywhere else.
 - **Activity**: skills, MCP servers and tools, and slash commands used, from hooks and from the transcript.
 - **Subagents**: totals, counts by type, and one row per subagent with status, duration bar and tokens.
 

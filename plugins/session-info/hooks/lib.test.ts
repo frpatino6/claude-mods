@@ -1,6 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  buildLog,
+  logLines,
+  toggleExpanded,
+  wrapText,
+  LOG_CAP,
   bumpDiag,
   diagNote,
   redact,
@@ -451,7 +456,7 @@ test('commandLine keeps the first line, redacted, with a hint for the rest', () 
 
 test('classifyBash reads status, exit code and output tail from what the engine exposes', () => {
   const ok = classifyBash({ text: 'a\nb\nc\nd', result: { stdout: 'a\nb\nc\nd\n', stderr: '' } })
-  expect(ok).toEqual({ status: 'ok', exit: undefined, tail: ['b', 'c', 'd'] })
+  expect(ok).toEqual({ status: 'ok', exit: undefined, tail: ['b', 'c', 'd'], log: 'a\nb\nc\nd' })
   const bad = classifyBash({ isError: true, text: 'Exit code 2\nboom', result: { stdout: '', stderr: 'boom TOKEN=abc\n' } })
   expect(bad).toMatchObject({ status: 'failed', exit: 2, tail: ['boom TOKEN=***'] })
   expect(classifyBash({ text: 'Exit code 1' }).status).toBe('failed')
@@ -498,4 +503,55 @@ test('diagnostics count events and surface in the report when tokens read 0', ()
   expect(diagNote(s)).toBe('turn events seen: 2, with usage: 1, session measures: 1')
   expect(textReport(s, 0)).toContain('Tokens: 0 total (in 0, out 0, cache read 0, cache write 0) [turn events seen: 2, with usage: 1, session measures: 1]')
   expect(textReport(addUsage(s, 'm', usage), 0)).not.toContain('[turn events seen')
+})
+
+test('toggleExpanded opens one row, collapses on a second press, and switches to another', () => {
+  expect(toggleExpanded(null, 'a')).toBe('a')
+  expect(toggleExpanded('a', 'a')).toBe(null)
+  expect(toggleExpanded('a', 'b')).toBe('b')
+})
+
+test('buildLog: stdout then stderr, redacted, capped with head and tail', () => {
+  expect(buildLog('', '')).toBe('')
+  expect(buildLog('out\n', '')).toBe('out')
+  expect(buildLog('out', 'bad TOKEN=abc')).toBe('out\n── stderr ──\nbad TOKEN=***')
+  expect(buildLog('Authorization: Bearer abcdef123456789', '')).toContain('Bearer ***')
+  const huge = buildLog(`HEAD${'x'.repeat(LOG_CAP)}TAIL`, '')
+  expect(huge.length).toBeLessThan(LOG_CAP + 40)
+  expect(huge.startsWith('HEAD')).toBe(true)
+  expect(huge.endsWith('TAIL')).toBe(true)
+  expect(huge).toContain('… output truncated …')
+})
+
+test('logLines keeps short logs, otherwise head + marker + tail within the limit', () => {
+  expect(logLines('', 40)).toEqual([])
+  expect(logLines('a\nb', 40)).toEqual(['a', 'b'])
+  const lines = Array.from({ length: 100 }, (_, i) => `l${i + 1}`).join('\n')
+  const cut = logLines(lines, 40)
+  expect(cut).toHaveLength(40)
+  expect(cut[0]).toBe('l1')
+  expect(cut[39]).toBe('l100')
+  expect(cut[20]).toBe('… 61 more lines …')
+  expect(logLines(lines, 20)).toHaveLength(20)
+})
+
+test('each command keeps only its own log; a running one fills in when it finishes', () => {
+  let s = startShell(emptyStats(), { id: 'a', command: 'echo A' }, 0)
+  s = startShell(s, { id: 'b', command: 'echo B' }, 1)
+  expect(s.shell.map(c => c.log)).toEqual(['', ''])
+  s = finishShell(s, 'b', { result: { stdout: 'only-b\n', stderr: '' } }, 5)
+  expect(s.shell[0]?.log).toBe('')
+  expect(s.shell[1]?.log).toBe('only-b')
+  s = finishShell(s, 'a', { result: { stdout: 'only-a\n', stderr: 'warn\n' } }, 6)
+  expect(s.shell[0]?.log).toBe('only-a\n── stderr ──\nwarn')
+  expect(s.shell[1]?.log).not.toContain('only-a')
+})
+
+test('wrapText wraps on spaces, keeps line breaks and ends in … when cut', () => {
+  expect(wrapText('short', 20, 3)).toEqual(['short'])
+  expect(wrapText('aaaa bbbb cccc dddd', 9, 5)).toEqual(['aaaa bbbb', 'cccc dddd'])
+  expect(wrapText('one\ntwo', 20, 3)).toEqual(['one', 'two'])
+  const cut = wrapText('aaaa bbbb cccc dddd eeee ffff gggg', 9, 2)
+  expect(cut).toHaveLength(2)
+  expect(cut[1]?.endsWith('…')).toBe(true)
 })

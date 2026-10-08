@@ -195,7 +195,7 @@ test('Bash calls show as running, then recent with status, duration, redacted co
   const first = $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'API_TOKEN=abc123 npm test', description: 'run tests' } as never)
   await clock.advance(3000)
   expect(await has(/Running now/)).toBe(true)
-  expect(await has(/\$ API_TOKEN=\*\*\* npm test/)).toBe(true)
+  expect((await ui.find({ key: 'cmd-b1' }))?.text).toContain('$ API_TOKEN=*** npm test')
   expect(await has(/abc123/)).toBe(false)
   await clock.advance(3000)
   gates.get('b1')?.()
@@ -232,5 +232,87 @@ test('the context trend fills from session.measure alone: no /info, no timer, no
   expect(await has(/each column = a sample of context size over time/)).toBe(true)
   expect(await has(/min 60\.0k · now 170\.0k · peak 170\.0k/)).toBe(true)
   expect(await has(/turn events seen: 0, with usage: 0, session measures: 3/)).toBe(true)
+  await ui.unmount()
+})
+
+test('clicking a command row expands its own log; only one is open; a running one fills in when it finishes', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, tokens: 1000 }, rateLimits: [] } }) as never)
+  on('session.authorize', () => ({ value: null }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('session.messages', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  const gates = new Map<string, () => void>()
+  on('tool.call', async (_$, e) => {
+    await new Promise<void>(release => gates.set(e.tool_use_id, release))
+    return { result: { stdout: `output of ${e.command} TOKEN=hunter2\n`, stderr: e.command === 'B' ? 'warn-from-B\n' : '' }, text: 'ok' } as never
+  })
+  await $.command.run({ command: 'info', args: '' } as never)
+  for (const columns of [120, 44]) {
+    const ui = await $.ui.mount({
+      plugin: 'session-info',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'session-info',
+      props: {},
+      viewport: { columns, rows: 60 },
+    })
+    const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+    const failures: string[] = []
+    const check = (name: string, got: boolean, want: boolean) => void (got !== want && failures.push(`${name} wanted ${want}`))
+
+    const a = $.tool.call({ tool: 'Bash', tool_use_id: `a${columns}`, command: 'A', description: 'first one' } as never)
+    await clock.advance(0)
+    gates.get(`a${columns}`)?.()
+    await a
+    const b = $.tool.call({ tool: 'Bash', tool_use_id: `b${columns}`, command: 'B' } as never)
+    await clock.advance(3000)
+    check('caption', await has(/click a command/), true)
+
+    // running one expanded: elapsed + note, no output yet
+    await ui.press({ key: `cmd-b${columns}` })
+    check('running note', await has(/output appears when the command finishes/), true)
+    check('running label', (await ui.find({ key: `cmd-b${columns}` }))?.text?.includes('▾') ?? false, true)
+
+    // finishes: the panel fills in with B's own output and stderr, redacted
+    gates.get(`b${columns}`)?.()
+    await b
+    await clock.advance(3000)
+    check('B output', await has(/output of B TOKEN=\*\*\*/), true)
+    check('B stderr', await has(/warn-from-B/), true)
+    check('no secret', await has(/hunter2/), false)
+    check('A output not under B', await has(/output of A/), false)
+
+    // another row: only one open at a time
+    await ui.press({ key: `cmd-a${columns}` })
+    check('A output', await has(/output of A TOKEN=\*\*\*/), true)
+    check('first one description', await has(/^first one$/), true)
+    check('B collapsed', await has(/output of B/), false)
+
+    // press again: collapsed
+    await ui.press({ key: `cmd-a${columns}` })
+    check('A collapsed', await has(/^first one$/), false)
+    check('A marker', (await ui.find({ key: `cmd-a${columns}` }))?.text?.includes('▸') ?? false, true)
+    expect(failures).toEqual([])
+    await ui.unmount()
+  }
+})
+
+test('an expanded command with no output says so', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '' }) as never)
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'q1', command: 'true' } as never)
+  await clock.advance(3000)
+  await ui.press({ key: 'cmd-q1' })
+  expect(await ui.find({ type: 'Text', text: /^no output$/ })).toBeDefined()
   await ui.unmount()
 })
