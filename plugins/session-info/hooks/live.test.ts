@@ -95,3 +95,29 @@ test('turns and tool calls fill the Token hogs card', async ($, on) => {
   expect(await has(/split evenly/)).toBe(true)
   await ui.unmount()
 })
+
+test('the Token hogs card shows the subagent share, none yet without subagents', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('agent.spawn', () => ({ agentId: 'sa1', model: 'm' }) as never)
+  on('turn.complete', (_$, e) => ({ text: e.answer }) as never)
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+  expect(await has(/none yet/)).toBe(true)
+
+  await $.agent.spawn({ prompt: 'p', description: 'map the repo', subagentType: 'Explore' } as never)
+  const usage = (n: number) => ({ input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'm' })
+  const done = { answer: 'a', durationMs: 1, isAborted: false, reason: 'answer' }
+  await $.turn.complete({ ...done, turnId: 'main', usage: usage(600) } as never)
+  await $.turn.complete({ ...done, turnId: 'sub', agentId: 'sa1', usage: usage(400) } as never)
+
+  expect(await has(/main-loop \+ subagent tokens/)).toBe(true)
+  expect(await has(/top: Explore "map the repo" 400/)).toBe(true)
+  await ui.unmount()
+})

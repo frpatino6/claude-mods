@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  subagentShare,
   startTurn,
   noteTool,
   finishTurn,
@@ -192,7 +193,7 @@ test('statusDot and formatDuration', () => {
 })
 
 test('textReport is compact, covers every section and works on empty stats', () => {
-  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(10)
+  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(11)
   let s = addUsage(emptyStats(), 'm', usage)
   s = addSkill(s, 'commit')
   s = addMcpTool(s, 'mcp__jira__get_issue')
@@ -334,9 +335,25 @@ test('tips: each rule fires alone, at most three, and none when nothing stands o
 })
 
 test('hogLines feed the text report', () => {
-  expect(hogLines(emptyStats())).toEqual(['Token hogs: none yet', 'Tips: nothing stands out'])
+  expect(hogLines(emptyStats())).toEqual(['Token hogs: none yet', 'Subagent share: none yet', 'Tips: nothing stands out'])
   const s = turn(emptyStats(), 't1', 'a', ['Read'], 2000)
   const text = textReport(s, 0)
   expect(text).toContain('Token hogs: Read ~2.0k (1x) [split estimate]')
   expect(text).toContain('Tips: nothing stands out')
+})
+
+test('subagentShare: denominator is main-loop + subagent tokens, top 3, red over 40%', () => {
+  expect(subagentShare(emptyStats())).toBeUndefined()
+  const base = addUsage(emptyStats(), 'm', { input_tokens: 700, output_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+  let s = recordSpawn(base, { id: 'a', type: 'Explore', description: 'map' }, 0)
+  s = recordSpawn(s, { id: 'b', type: 'general-purpose', description: 'fix' }, 0)
+  s = recordSpawn(s, { id: 'c', type: 'fork', description: 'idle' }, 0)
+  s = recordSpawn(s, { id: 'd', type: 'Explore', description: 'more' }, 0)
+  s = addAgentTokens(addAgentTokens(addAgentTokens(s, 'a', 200), 'b', 150), 'd', 50)
+  const share = subagentShare(s)
+  expect(share).toMatchObject({ tokens: 400, total: 1000, percent: 40, isHog: false })
+  expect(share?.top.map(a => a.id)).toEqual(['a', 'b', 'd'])
+  expect(subagentShare(addAgentTokens(s, 'c', 1))).toMatchObject({ percent: 40.1, isHog: true })
+  expect(subagentShare(recordSpawn(emptyStats(), { id: 'z', type: 't', description: '' }, 0))).toMatchObject({ percent: 0, isHog: false, top: [] })
+  expect(textReport(addAgentTokens(s, 'c', 1), 0)).toContain('Subagent share: 40.1% of tokens (401 of 1.0k); top: Explore 200, general-purpose 150, Explore 50')
 })

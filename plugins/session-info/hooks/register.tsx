@@ -9,6 +9,7 @@ import {
   noteTool,
   scanTools,
   startTurn,
+  subagentShare,
   tips,
   toolRows,
   turnRows,
@@ -366,6 +367,7 @@ export const register: Register = on => {
     const toolTop = top(toolsView.rows, 5)
     const toolMax = Math.max(1, ...toolTop.shown.map(t => t.tokens))
     const hints = tips(s)
+    const sub = subagentShare(s)
     const hogs = card('Token hogs', [
       <Text dimColor>Last turns: bar = tokens in that turn (cache included) · red = over 2x the session average</Text>,
       ...(turns.length === 0
@@ -391,6 +393,27 @@ export const register: Register = on => {
         ),
       ),
       toolTop.more > 0 ? <Text dimColor>+{toolTop.more} more</Text> : <Text> </Text>,
+      <Text> </Text>,
+      <Text dimColor wrap="wrap">
+        Subagents: bar = subagent tokens ÷ (main-loop + subagent tokens) · red over 40%
+      </Text>,
+      ...(sub
+        ? [
+            ...barRows(
+              { label: 'Subagents', percent: sub.percent, primary: `${pct(sub.percent)}%`, secondary: formatTokens(sub.tokens), labelW },
+              sub.isHog ? 'red' : ACCENT,
+              true,
+            ),
+            sub.top.length > 0 ? (
+              <Text dimColor wrap="wrap">
+                {`top: ${sub.top.map(a => `${a.type}${a.description ? ` "${clip(a.description, 18)}"` : ''} ${formatTokens(a.tokens)}`).join(' · ')}`}
+              </Text>
+            ) : (
+              <Text> </Text>
+            ),
+          ]
+        : [<Text dimColor>none yet</Text>]),
+      <Text> </Text>,
       <Text bold>Tips</Text>,
       ...(hints.length === 0
         ? [<Text dimColor>nothing stands out</Text>]

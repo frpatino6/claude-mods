@@ -1,6 +1,6 @@
 {
   "name": "session-info",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "/info pane: session tokens, plan-aware quota/balance, and the skills, MCP tools and commands used",
   "types": "./types/index.d.ts",
   "author": {

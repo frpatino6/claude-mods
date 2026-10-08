@@ -11,6 +11,7 @@
   - *Last turns*: latest first, bar = tokens in that turn (cache included), red when over 2x the session average (judged from 3 completed turns), labelled with the prompt snippet and the main tool.
   - *Tools*: one bar per tool (MCP tools grouped per server), sorted by size, top 5. Size is **estimated** as characters of what the tool returned ÷ 4. If result text is unavailable it falls back to each turn's tokens split evenly among the tools it used, and says so in the caption.
   - *Tips*: up to 3 rule-based hints (context over 70% full, repeated 20k+ token results from one tool, subagents over 40% of tokens, one turn over 3x average, very low cache hit), or "nothing stands out".
+  - *Subagents*: share of all tokens (subagent tokens ÷ (main-loop + subagent tokens)), red over 40%, plus the top 3 subagents by tokens.
   - The text report carries the top 3 hogs and the tips too.
 - **Activity**: skills, MCP servers and tools, and slash commands used, from hooks and from the transcript.
 - **Subagents**: totals, counts by type, and one row per subagent with status, duration bar and tokens.

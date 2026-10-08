@@ -586,6 +586,36 @@ export const toolRows = (stats: Stats): ToolRows => {
   return rows.length === 0 ? { mode: 'none', rows: [] } : { mode: 'split', rows }
 }
 
+export const SUBAGENT_HOG_PERCENT = 40
+
+export type SubagentShare = {
+  /** tokens the subagents' own turns used */
+  tokens: number
+  /** every token counted: main loop + subagents */
+  total: number
+  /** tokens / total, 0-100 (one decimal) */
+  percent: number
+  isHog: boolean
+  /** the three subagents with the most tokens */
+  top: AgentRec[]
+}
+
+/** Subagent tokens over all tokens counted (main-loop turns + subagent turns); undefined with no subagents. */
+export const subagentShare = (stats: Stats): SubagentShare | undefined => {
+  if (stats.agents.length === 0) return undefined
+  const t = sumTokens(stats)
+  const total = t.input + t.output + t.cacheRead + t.cacheWrite
+  const tokens = Math.min(total, stats.agents.reduce((a, one) => a + one.tokens, 0))
+  const percent = total === 0 ? 0 : Math.round((tokens / total) * 1000) / 10
+  return {
+    tokens,
+    total,
+    percent,
+    isHog: percent > SUBAGENT_HOG_PERCENT,
+    top: [...stats.agents].filter(a => a.tokens > 0).sort((a, b) => b.tokens - a.tokens).slice(0, 3),
+  }
+}
+
 /** Up to three plain-language hints; empty when nothing stands out. */
 export const tips = (stats: Stats): string[] => {
   const out: string[] = []
@@ -600,11 +630,8 @@ export const tips = (stats: Stats): string[] => {
     }
   }
   const total = sumTokens(stats)
-  const all = total.input + total.output + total.cacheRead + total.cacheWrite
-  const agentTokens = stats.agents.reduce((a, one) => a + one.tokens, 0)
-  if (all > 0 && agentTokens / all > 0.4) {
-    out.push(`Subagents used ${Math.round((agentTokens / all) * 100)}% of the tokens: check they need that much context.`)
-  }
+  const sub = subagentShare(stats)
+  if (sub?.isHog) out.push(`Subagents used ${Math.round(sub.percent)}% of the tokens: check they need that much context.`)
   const avg = averageTurn(stats)
   const biggest = [...finishedTurns(stats)].sort((a, b) => b.tokens - a.tokens)[0]
   if (biggest && finishedTurns(stats).length >= 3 && avg > 0 && biggest.tokens > 3 * avg) {
@@ -625,5 +652,9 @@ export const hogLines = (stats: Stats): string[] => {
       ? 'none yet'
       : `${rows.slice(0, 3).map(r => `${r.name} ~${formatTokens(r.tokens)} (${r.calls}x)`).join(', ')}${mode === 'split' ? ' [split estimate]' : ' [result size est.]'}`
   const found = tips(stats)
-  return [`Token hogs: ${hogs}`, `Tips: ${found.length === 0 ? 'nothing stands out' : found.join(' ')}`]
+  const sub = subagentShare(stats)
+  const subText = !sub
+    ? 'none yet'
+    : `${pct(sub.percent)}% of tokens (${formatTokens(sub.tokens)} of ${formatTokens(sub.total)})${sub.top.length > 0 ? `; top: ${sub.top.map(a => `${a.type} ${formatTokens(a.tokens)}`).join(', ')}` : ''}`
+  return [`Token hogs: ${hogs}`, `Subagent share: ${subText}`, `Tips: ${found.length === 0 ? 'nothing stands out' : found.join(' ')}`]
 }
