@@ -1,4 +1,4 @@
-import type { AgentRec, AgentStatus, AuthKind, RateLimit, Stats, TokenCounts, ToolStat, TurnRec } from '../types'
+import type { AgentRec, AgentStatus, ShellEntry, ShellStatus, AuthKind, RateLimit, Stats, TokenCounts, ToolStat, TurnRec } from '../types'
 
 export const emptyStats = (): Stats => ({
   models: {},
@@ -8,6 +8,7 @@ export const emptyStats = (): Stats => ({
   rateLimits: [],
   agents: [],
   turns: [],
+  shell: [],
   tools: {},
   contextHistory: [],
   auth: 'unknown',
@@ -364,6 +365,7 @@ export const textReport = (stats: Stats, now: number): string => {
       ? []
       : [`Context now: ${formatInt(stats.contextTokens)}${stats.contextWindow ? ` / ${formatInt(stats.contextWindow)}` : ''} tokens (engine)`]),
     contextTrendLine(stats),
+    shellLine(stats),
     ...balance.lines.map(line => `${line.label}: ${line.value}`),
     `Skills: ${listText(ranked(stats.skills))}`,
     `MCP: ${listText(servers)}`,
@@ -729,4 +731,125 @@ export const contextTrendLine = (stats: Stats): string => {
   return trend
     ? `Context trend: ${trend.cells.map(c => c.char).join('')} ${formatTokens(trend.current)} now · peak ${formatTokens(trend.peak)}${trend.drops > 0 ? ` · compacted ${trend.drops}x` : ''}`
     : 'Context trend: collecting…'
+}
+
+// ---- Terminal ----------------------------------------------------------------
+
+const KEEP_SHELL = 50
+export const LONG_COMMAND_MS = 30_000
+
+/** Masks obvious secrets (the repo is public, panes get screenshotted). */
+export const redact = (text: string): string =>
+  text
+    .replace(/(authorization\s*:\s*)(bearer\s+|basic\s+|token\s+)?[^\s"']+/gi, '$1$2***')
+    .replace(/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, '***')
+    .replace(/(:\/\/[^\s:/@]+:)[^\s@/]+@/g, '$1***@')
+    .replace(/(--?(?:password|passwd|token|secret|api-?key|access-?key)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi, '$1***')
+    .replace(/\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, '$1=***')
+
+/** The first non-empty line of a command, redacted, with a `+N lines` hint when there is more. */
+export const commandLine = (command: string): string => {
+  const lines = command.split('\n').map(l => l.trim()).filter(Boolean)
+  const first = redact(lines[0] ?? '')
+  return lines.length > 1 ? `${first} …(+${lines.length - 1})` : first
+}
+
+export type BashResult = {
+  isError?: boolean
+  deny?: string
+  text?: string
+  result?: { stdout?: string; stderr?: string; interrupted?: boolean; timedOutAfterMs?: number; backgroundTaskId?: string }
+}
+
+/** Reads what the engine exposes of a finished Bash call. The exit code is only what the result text says. */
+export const classifyBash = (ran: BashResult): { status: ShellStatus; exit?: number; tail: string[] } => {
+  const r = ran.result
+  const text = ran.text ?? ''
+  const code = /exit code:?\s*(-?\d+)/i.exec(text)
+  const exit = code?.[1] === undefined ? undefined : Number(code[1])
+  const status: ShellStatus = ran.deny
+    ? 'denied'
+    : r?.timedOutAfterMs
+      ? 'timeout'
+      : r?.backgroundTaskId
+        ? 'background'
+        : r?.interrupted
+          ? 'interrupted'
+          : ran.isError || (exit !== undefined && exit !== 0)
+            ? 'failed'
+            : 'ok'
+  const out = [r?.stdout ?? '', status === 'failed' ? (r?.stderr ?? '') : ''].join('\n')
+  const tail = out
+    .split('\n')
+    .map(l => l.replace(/\s+$/, ''))
+    .filter(Boolean)
+    .slice(-3)
+    .map(l => clip(redact(l), 160))
+  return { status, exit, tail }
+}
+
+export const startShell = (
+  stats: Stats,
+  call: { id: string; command: string; description?: string; background?: boolean },
+  now: number,
+): Stats =>
+  stats.shell.some(c => c.id === call.id)
+    ? stats
+    : {
+        ...stats,
+        shell: [
+          ...stats.shell,
+          { id: call.id, command: commandLine(call.command), description: call.description ? redact(call.description) : undefined, startedAt: now, status: 'running' as const, tail: [] },
+        ].slice(-KEEP_SHELL),
+      }
+
+export const finishShell = (stats: Stats, id: string, ran: BashResult, now: number): Stats => {
+  const done = classifyBash(ran)
+  return {
+    ...stats,
+    shell: stats.shell.map(c => (c.id === id ? { ...c, ...done, endedAt: now } : c)),
+  }
+}
+
+export const isRunning = (c: ShellEntry): boolean => c.status === 'running'
+
+export const shellDuration = (c: ShellEntry, now: number): number => Math.max(0, (c.endedAt ?? now) - c.startedAt)
+
+/** Commands still running, oldest first. */
+export const runningShell = (stats: Stats): ShellEntry[] => stats.shell.filter(isRunning)
+
+/** Finished commands (background launches included), latest first. */
+export const recentShell = (stats: Stats, n: number): ShellEntry[] =>
+  stats.shell.filter(c => !isRunning(c)).slice(-n).reverse()
+
+export const shellTotals = (stats: Stats, now: number): { count: number; failed: number; totalMs: number } => ({
+  count: stats.shell.length,
+  failed: stats.shell.filter(c => c.status === 'failed' || c.status === 'timeout' || c.status === 'interrupted').length,
+  totalMs: stats.shell.reduce((a, c) => a + shellDuration(c, now), 0),
+})
+
+export const statusMark = (c: ShellEntry): { icon: string; word: string; isBad: boolean } =>
+  c.status === 'ok'
+    ? { icon: '✓', word: 'ok', isBad: false }
+    : c.status === 'failed'
+      ? { icon: '✗', word: c.exit === undefined ? 'failed' : `exit ${c.exit}`, isBad: true }
+      : c.status === 'timeout'
+        ? { icon: '⏱', word: 'timeout', isBad: true }
+        : c.status === 'interrupted'
+          ? { icon: '✗', word: 'stopped', isBad: true }
+          : c.status === 'denied'
+            ? { icon: '✗', word: 'denied', isBad: true }
+            : c.status === 'background'
+              ? { icon: '↻', word: 'background', isBad: false }
+              : { icon: '●', word: 'running', isBad: false }
+
+const SPIN = '◐◓◑◒'
+export const spinner = (now: number): string => SPIN[Math.floor(now / 1000) % SPIN.length] ?? '◐'
+
+export const shellLine = (stats: Stats): string => {
+  const running = runningShell(stats).length
+  const last = recentShell(stats, 3)
+  const text = last.map(c => `${statusMark(c).icon} ${formatDuration(shellDuration(c, 0) || 0)} $ ${clip(c.command, 40)}`).join(' | ')
+  return `Terminal: ${running} running; ${stats.shell.length} commands${last.length > 0 ? `; last: ${text}` : ''}`
 }

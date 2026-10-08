@@ -37,6 +37,22 @@ export type ToolStat = {
   bigResults: number
 }
 
+export type ShellStatus = 'running' | 'ok' | 'failed' | 'timeout' | 'interrupted' | 'denied' | 'background'
+
+export type ShellEntry = {
+  id: string
+  /** the command, secrets already redacted */
+  command: string
+  description?: string
+  startedAt: number
+  endedAt?: number
+  status: ShellStatus
+  /** read from the result text ("Exit code N"); absent when the text has none */
+  exit?: number
+  /** last output lines, redacted; empty when the result carried no output */
+  tail: string[]
+}
+
 export type AuthKind = 'bearer' | 'api-key' | 'none' | 'unknown'
 
 export type Stats = {
@@ -48,6 +64,9 @@ export type Stats = {
   costUsd?: number
   agents: AgentRec[]
   turns: TurnRec[]
+  shell: ShellEntry[]
+  /** bumped by the refresh while a command runs, so elapsed times redraw */
+  tick?: number
   tools: Record<string, ToolStat>
   auth: AuthKind
   contextTokens?: number

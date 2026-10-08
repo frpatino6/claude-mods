@@ -153,3 +153,62 @@ test('the context trend collects, then draws once two samples exist, and marks a
   expect(got).toEqual({ collecting: true, caption: true, compacted: true, numbers: true })
   await ui.unmount()
 })
+
+test('Bash calls show as running, then recent with status, duration, redacted command and output tail', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, tokens: 1000 }, rateLimits: [] } }) as never)
+  on('session.authorize', () => ({ value: null }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('session.messages', () => ({ value: [] }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  const gates = new Map<string, () => void>()
+  on('tool.call', async (_$, e) => {
+    await new Promise<void>(release => gates.set(e.tool_use_id, release))
+    return e.command === 'false'
+      ? ({ result: { stdout: '', stderr: 'nope\n' }, isError: true, text: 'Exit code 1\nnope' } as never)
+      : ({ result: { stdout: 'line1\nline2\nline3\nline4\n', stderr: '' }, text: 'ok' } as never)
+  })
+  await $.command.run({ command: 'info', args: '' } as never)
+  for (const columns of [120, 44]) {
+    const ui = await $.ui.mount({
+      plugin: 'session-info',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'session-info',
+      props: {},
+      viewport: { columns, rows: 60 },
+    })
+    const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+    expect(await has(/no commands yet/)).toBe(true)
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({
+    plugin: 'session-info',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'session-info',
+    props: {},
+    viewport: { columns: 120, rows: 60 },
+  })
+  const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
+
+  const first = $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'API_TOKEN=abc123 npm test', description: 'run tests' } as never)
+  await clock.advance(3000)
+  expect(await has(/Running now/)).toBe(true)
+  expect(await has(/\$ API_TOKEN=\*\*\* npm test/)).toBe(true)
+  expect(await has(/abc123/)).toBe(false)
+  await clock.advance(3000)
+  gates.get('b1')?.()
+  await first
+  const second = $.tool.call({ tool: 'Bash', tool_use_id: 'b2', command: 'false' } as never)
+  await clock.advance(6000)
+  gates.get('b2')?.()
+  await second
+  await clock.advance(3000)
+
+  expect(await has(/Running now/)).toBe(false)
+  expect(await has(/exit 1/)).toBe(true)
+  expect(await has(/2 commands · /)).toBe(true)
+  expect(await has(/│ nope/)).toBe(true)
+  await ui.unmount()
+})

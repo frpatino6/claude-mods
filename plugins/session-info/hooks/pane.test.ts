@@ -12,9 +12,10 @@ test('the Pane draws its cards on terminal and desktop, wide and narrow', async 
         props: {},
         viewport: { columns, rows: 40 },
       })
-      for (const title of ['Session', 'Quota', 'Tokens', 'Token hogs', 'Activity', 'Subagents']) {
+      for (const title of ['Session', 'Quota', 'Tokens', 'Token hogs', 'Terminal', 'Activity', 'Subagents']) {
         expect(await ui.find({ type: 'Text', text: title })).toBeDefined()
       }
+      expect(await ui.find({ type: 'Text', text: /no commands yet/ })).toBeDefined()
       await ui.unmount()
     }
   }

@@ -2,8 +2,19 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Stats } from '../types'
+import type { BashResult } from './lib'
 import {
   addAgentTokens,
+  finishShell,
+  isRunning,
+  recentShell,
+  runningShell,
+  shellDuration,
+  shellTotals,
+  spinner,
+  startShell,
+  statusMark,
+  LONG_COMMAND_MS,
   finishTurn,
   hogLines,
   noteTool,
@@ -100,6 +111,7 @@ async function refresh($: EngineInterface, isTurnEnd = false) {
       await update($, stats, one => ({ ...mergeScan(one, scanMessages(rows)), tools: scanTools(rows) }))
     }),
   ])
+  await update($, stats, one => (one.shell.some(isRunning) ? { ...one, tick: (one.tick ?? 0) + 1 } : one))
   const warn = problems.filter(Boolean).join('; ') || undefined
   await update($, stats, one => (one.warn === warn ? one : { ...one, warn }))
 }
@@ -153,8 +165,21 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     await update($, stats, one => noteTool(addMcpTool(one, e.tool), e.tool))
+    if (e.tool !== 'Bash') return next(e)
 
-    return next(e)
+    const id = e.tool_use_id
+    const call = { id, command: String(e.command ?? ''), description: typeof e.description === 'string' ? e.description : undefined }
+    try {
+      const began = await $.clock.now()
+      await update($, stats, one => startShell(one, call, began))
+    } catch {}
+    const ran = await next(e)
+    try {
+      const ended = await $.clock.now()
+      await update($, stats, one => finishShell(one, id, ran as BashResult, ended))
+    } catch {}
+
+    return ran
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -448,6 +473,60 @@ export const register: Register = on => {
           ))),
     ])
 
+    // 3c. Terminal
+    const clockNow = await $.clock.now()
+    const live = runningShell(s)
+    const recent = recentShell(s, W >= 44 ? 8 : 5)
+    const longestCmd = Math.max(1, ...recent.map(c => shellDuration(c, clockNow)))
+    const totals = shellTotals(s, clockNow)
+    const lastOut = recent.find(c => c.tail.length > 0)
+    const terminal = card('Terminal', [
+      s.shell.length === 0 ? (
+        <Text dimColor>no commands yet</Text>
+      ) : (
+        <Text>
+          <Text bold>{totals.count}</Text>
+          <Text dimColor> commands · </Text>
+          <Text bold color={totals.failed > 0 ? 'red' : undefined}>{totals.failed}</Text>
+          <Text dimColor> failed · total time </Text>
+          <Text bold>{formatDuration(totals.totalMs)}</Text>
+        </Text>
+      ),
+      <Text dimColor wrap="wrap">
+        Bar = duration relative to the longest · red = failed · yellow = over 30s · exit codes are read from the result text, background shells are not listed, times are measured by this mod
+      </Text>,
+      ...(live.length > 0 ? [<Text bold>Running now</Text>] : []),
+      ...live.map(c => (
+        <Text>
+          <Text bold color="yellow">{spinner(clockNow)}</Text>
+          <Text bold>{` ${padStart(formatDuration(shellDuration(c, clockNow)), 6)} `}</Text>
+          <Text>{clip(`$ ${c.command}`, Math.max(8, W - 10))}</Text>
+        </Text>
+      )),
+      ...(recent.length > 0 ? [<Text bold>Recent</Text>] : []),
+      ...recent.flatMap(c => {
+        const mark = statusMark(c)
+        const ms = shellDuration(c, clockNow)
+        const color = mark.isBad ? 'red' : ms > LONG_COMMAND_MS ? 'yellow' : ACCENT
+        return [
+          <Text>
+            <Text bold color={mark.isBad ? 'red' : undefined}>{`${mark.icon} `}</Text>
+            <Text>{clip(`$ ${c.command}`, Math.max(8, W - 3))}</Text>
+          </Text>,
+          ...barRows(
+            { label: `${mark.word}`, percent: (ms / longestCmd) * 100, primary: formatDuration(ms), secondary: c.description ?? '', labelW },
+            color,
+          ),
+        ]
+      }),
+      ...(lastOut
+        ? [
+            <Text dimColor>last output (stdout{lastOut.status === 'failed' ? ' + stderr' : ''}, redacted)</Text>,
+            ...lastOut.tail.map(line => <Text dimColor>{clip(`│ ${line}`, W)}</Text>),
+          ]
+        : []),
+    ])
+
     // 4. Activity
     const isWide = W >= 50
     const colW = isWide ? Math.floor((W - 4) / 3) : W
@@ -562,6 +641,7 @@ export const register: Register = on => {
         {quota}
         {tokens}
         {hogs}
+        {terminal}
         {activity}
         {subagents}
         <Text dimColor>refreshes every 3s while open</Text>

@@ -1,6 +1,17 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  redact,
+  commandLine,
+  classifyBash,
+  startShell,
+  finishShell,
+  runningShell,
+  recentShell,
+  shellTotals,
+  statusMark,
+  shellLine,
+  spinner,
   sampleContext,
   findDrops,
   downsample,
@@ -199,7 +210,7 @@ test('statusDot and formatDuration', () => {
 })
 
 test('textReport is compact, covers every section and works on empty stats', () => {
-  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(12)
+  expect(textReport(emptyStats(), 0).split('\n')).toHaveLength(13)
   let s = addUsage(emptyStats(), 'm', usage)
   s = addSkill(s, 'commit')
   s = addMcpTool(s, 'mcp__jira__get_issue')
@@ -413,4 +424,67 @@ test('trend needs two samples; the report line says collecting, then the numbers
   expect(contextTrendLine(ctx([50_000, 145_000, 180_000, 145_000]))).toBe('Context trend: ▃▆▇▆ 145.0k now · peak 180.0k')
   expect(contextTrendLine(ctx([180_000, 40_000]))).toContain('compacted 1x')
   expect(textReport(ctx([1000, 2000]), 0)).toContain('Context trend:')
+})
+
+test('redact masks tokens, keys, passwords, headers and URL credentials but leaves ordinary commands alone', () => {
+  expect(redact('ls -la src')).toBe('ls -la src')
+  expect(redact('curl -H "Authorization: Bearer abc123def456ghi789" https://x.io')).not.toContain('abc123')
+  expect(redact('curl -H "Authorization: Bearer abc123def456ghi789" https://x.io')).toContain('Authorization: Bearer ***')
+  expect(redact('git push https://user:hunter2@github.com/a/b')).toBe('git push https://user:***@github.com/a/b')
+  expect(redact('echo ghp_abcdefghijklmnopqrstuvwxyz0123456789')).toBe('echo ***')
+  expect(redact('export OPENAI_API_KEY=sk-live-abcdefghijklmnop123')).toBe('export OPENAI_API_KEY=***')
+  expect(redact('DB_PASSWORD="my secret" node app.js')).toBe('DB_PASSWORD=*** node app.js')
+  expect(redact('mysql --password hunter2 -u root')).toBe('mysql --password *** -u root')
+  expect(redact('tool --token=abc123 --verbose')).toBe('tool --token=*** --verbose')
+  expect(redact('AWS=AKIAABCDEFGHIJKLMNOP')).toBe('AWS=***')
+  // names are matched by substring on purpose: a false positive (KEYBOARD) beats a leaked key
+  expect(redact('KEYBOARD=us')).toBe('KEYBOARD=***')
+})
+
+test('commandLine keeps the first line, redacted, with a hint for the rest', () => {
+  expect(commandLine('echo hi')).toBe('echo hi')
+  expect(commandLine('\n  npm test  \nnpm run build')).toBe('npm test …(+1)')
+  expect(commandLine('TOKEN=abc npm publish')).toBe('TOKEN=*** npm publish')
+})
+
+test('classifyBash reads status, exit code and output tail from what the engine exposes', () => {
+  const ok = classifyBash({ text: 'a\nb\nc\nd', result: { stdout: 'a\nb\nc\nd\n', stderr: '' } })
+  expect(ok).toEqual({ status: 'ok', exit: undefined, tail: ['b', 'c', 'd'] })
+  const bad = classifyBash({ isError: true, text: 'Exit code 2\nboom', result: { stdout: '', stderr: 'boom TOKEN=abc\n' } })
+  expect(bad).toMatchObject({ status: 'failed', exit: 2, tail: ['boom TOKEN=***'] })
+  expect(classifyBash({ text: 'Exit code 1' }).status).toBe('failed')
+  expect(classifyBash({ result: { stdout: '', stderr: '', timedOutAfterMs: 1000 } }).status).toBe('timeout')
+  expect(classifyBash({ result: { stdout: '', stderr: '', backgroundTaskId: 'b1' } }).status).toBe('background')
+  expect(classifyBash({ result: { stdout: '', stderr: '', interrupted: true } }).status).toBe('interrupted')
+  expect(classifyBash({ deny: 'no' }).status).toBe('denied')
+  expect(classifyBash({}).tail).toEqual([])
+})
+
+test('shell entries go running -> done with measured durations, totals and the report line', () => {
+  let s = startShell(emptyStats(), { id: 'a', command: 'sleep 5', description: 'wait' }, 1000)
+  s = startShell(s, { id: 'a', command: 'dup' }, 1500)
+  s = startShell(s, { id: 'b', command: 'false' }, 1200)
+  expect(s.shell).toHaveLength(2)
+  expect(runningShell(s).map(c => c.id)).toEqual(['a', 'b'])
+  expect(recentShell(s, 5)).toEqual([])
+  s = finishShell(s, 'b', { isError: true, text: 'Exit code 1' }, 1300)
+  s = finishShell(s, 'a', { result: { stdout: 'done\n', stderr: '' } }, 6000)
+  expect(runningShell(s)).toEqual([])
+  expect(recentShell(s, 5).map(c => c.id)).toEqual(['b', 'a'])
+  expect(s.shell[0]).toMatchObject({ status: 'ok', endedAt: 6000, tail: ['done'] })
+  expect(shellTotals(s, 9999)).toEqual({ count: 2, failed: 1, totalMs: 5100 })
+  expect(statusMark(s.shell[1]!)).toEqual({ icon: '✗', word: 'exit 1', isBad: true })
+  expect(statusMark(s.shell[0]!)).toEqual({ icon: '✓', word: 'ok', isBad: false })
+  expect(shellLine(s)).toBe('Terminal: 0 running; 2 commands; last: ✗ 0s $ false | ✓ 5s $ sleep 5')
+  const running = startShell(emptyStats(), { id: 'r', command: 'x' }, 0)
+  expect(shellTotals(running, 4000).totalMs).toBe(4000)
+  expect(shellLine(emptyStats())).toBe('Terminal: 0 running; 0 commands')
+  expect(spinner(0)).not.toBe(spinner(1000))
+})
+
+test('shell history is bounded to 50', () => {
+  let s = emptyStats()
+  for (let i = 0; i < 70; i++) s = startShell(s, { id: `c${i}`, command: `echo ${i}` }, i)
+  expect(s.shell).toHaveLength(50)
+  expect(s.shell[49]?.id).toBe('c69')
 })

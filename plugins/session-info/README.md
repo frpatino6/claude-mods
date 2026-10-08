@@ -13,6 +13,8 @@
   - *Tips*: up to 3 rule-based hints (context over 70% full, repeated 20k+ token results from one tool, subagents over 40% of tokens, one turn over 3x average, very low cache hit), or "nothing stands out".
   - *Subagents*: share of all tokens (subagent tokens ÷ (main-loop + subagent tokens)), red over 40%, plus the top 3 subagents by tokens.
   - The text report carries the top 3 hogs and the tips too.
+- **Terminal**: the Bash commands the agent runs. *Running now* (spinner, elapsed time that ticks with the refresh, `$ command`), *Recent* (up to 8: ✓ ok / ✗ exit N / ⏱ timeout, duration bar scaled to the longest, red when failed, yellow over 30s, description), a totals line, and the last 3 lines of the latest command's output when the result carries output. Commands and output are redacted (tokens, API keys, `Authorization` headers, `KEY=`/`TOKEN=`/`SECRET=`/`PASSWORD=` values, URL credentials). History is the last 50.
+  - Approximated: durations are measured by the mod around the call; exit codes come from the result text ("Exit code N"); background shells are not listed (a started one shows as *background*); commands that ran before the mod loaded are not shown.
 - **Activity**: skills, MCP servers and tools, and slash commands used, from hooks and from the transcript.
 - **Subagents**: totals, counts by type, and one row per subagent with status, duration bar and tokens.
 
