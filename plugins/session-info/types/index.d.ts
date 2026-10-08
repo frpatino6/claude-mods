@@ -41,10 +41,8 @@ export type ShellStatus = 'running' | 'ok' | 'failed' | 'timeout' | 'interrupted
 
 export type ShellEntry = {
   id: string
-  /** first line of the command, secrets already redacted */
+  /** the command, secrets already redacted */
   command: string
-  /** the whole command, secrets already redacted */
-  full: string
   description?: string
   startedAt: number
   endedAt?: number

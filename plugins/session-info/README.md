@@ -1,5 +1,7 @@
 # session-info
 
+> 0.4.3 behaves exactly like 0.4.1 (it reverts the 0.4.2 single-panel Terminal card; the version is higher only so installed copies update).
+
 `/info` opens a pane (and prints a plain-text report, so you see output even if the pane cannot draw). The pane refreshes every 3 seconds while open.
 
 ## Cards
@@ -13,8 +15,8 @@
   - *Tips*: up to 3 rule-based hints (context over 70% full, repeated 20k+ token results from one tool, subagents over 40% of tokens, one turn over 3x average, very low cache hit), or "nothing stands out".
   - *Subagents*: share of all tokens (subagent tokens ÷ (main-loop + subagent tokens)), red over 40%, plus the top 3 subagents by tokens.
   - The text report carries the top 3 hogs and the tips too.
-- **Terminal**: one panel for the **latest** Bash command. While it runs: spinner, `running`, elapsed time (ticks with the refresh), a bar against 30s, the description (bold, as the agent wrote it), the full command wrapped over up to 3 lines, and `+N more running` if several run in parallel. When it finishes the panel stays with what it did (✓ ok / ✗ exit N / ⏱ timeout, final duration, command, description and the last 8 lines of output, 4 when narrow) until the next command starts and replaces it. A totals line reads `N commands · M failed · total time X`; the last 50 commands are kept internally and the text report carries the running count and the last finished one. Commands and output are redacted (tokens, API keys, `Authorization` headers, `KEY=`/`TOKEN=`/`SECRET=`/`PASSWORD=` values, URL credentials).
-  - Approximated: the engine exposes no live output of a running command, so output appears when it finishes. Durations are measured by the mod around the call; exit codes come from the result text ("Exit code N"); background shells are not listed (a started one shows as *background*); commands from before the mod loaded are not shown.
+- **Terminal**: the Bash commands the agent runs. *Running now* (spinner, elapsed time that ticks with the refresh, `$ command`), *Recent* (up to 8: ✓ ok / ✗ exit N / ⏱ timeout, duration bar scaled to the longest, red when failed, yellow over 30s, description), a totals line, and the last 3 lines of the latest command's output when the result carries output. Commands and output are redacted (tokens, API keys, `Authorization` headers, `KEY=`/`TOKEN=`/`SECRET=`/`PASSWORD=` values, URL credentials). History is the last 50.
+  - Approximated: durations are measured by the mod around the call; exit codes come from the result text ("Exit code N"); background shells are not listed (a started one shows as *background*); commands that ran before the mod loaded are not shown.
 - **Activity**: skills, MCP servers and tools, and slash commands used, from hooks and from the transcript.
 - **Subagents**: totals, counts by type, and one row per subagent with status, duration bar and tokens.
 

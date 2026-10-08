@@ -736,7 +736,6 @@ export const contextTrendLine = (stats: Stats): string => {
 // ---- Terminal ----------------------------------------------------------------
 
 const KEEP_SHELL = 50
-export const TAIL_LINES = 8
 export const LONG_COMMAND_MS = 30_000
 
 /** Masks obvious secrets (the repo is public, panes get screenshotted). */
@@ -785,7 +784,7 @@ export const classifyBash = (ran: BashResult): { status: ShellStatus; exit?: num
     .split('\n')
     .map(l => l.replace(/\s+$/, ''))
     .filter(Boolean)
-    .slice(-TAIL_LINES)
+    .slice(-3)
     .map(l => clip(redact(l), 160))
   return { status, exit, tail }
 }
@@ -801,7 +800,7 @@ export const startShell = (
         ...stats,
         shell: [
           ...stats.shell,
-          { id: call.id, command: commandLine(call.command), full: redact(call.command.trim()), description: call.description ? redact(call.description) : undefined, startedAt: now, status: 'running' as const, tail: [] },
+          { id: call.id, command: commandLine(call.command), description: call.description ? redact(call.description) : undefined, startedAt: now, status: 'running' as const, tail: [] },
         ].slice(-KEEP_SHELL),
       }
 
@@ -848,39 +847,11 @@ export const statusMark = (c: ShellEntry): { icon: string; word: string; isBad: 
 const SPIN = '◐◓◑◒'
 export const spinner = (now: number): string => SPIN[Math.floor(now / 1000) % SPIN.length] ?? '◐'
 
-/** The panel's command: the most recent one still running, else the latest one; `moreRunning` counts the other running ones. */
-export const currentShell = (stats: Stats): { entry: ShellEntry; moreRunning: number } | undefined => {
-  const running = runningShell(stats)
-  const entry = running[running.length - 1] ?? stats.shell[stats.shell.length - 1]
-  return entry ? { entry, moreRunning: Math.max(0, running.length - (isRunning(entry) ? 1 : 0)) } : undefined
-}
-
-/** Wraps text to `width` columns over at most `maxLines` lines, keeping its own line breaks; the last line ends in … when cut. */
-export const wrapText = (text: string, width: number, maxLines: number): string[] => {
-  const w = Math.max(4, width)
-  const lines: string[] = []
-  for (const raw of text.split('\n')) {
-    let rest = raw.replace(/\s+$/, '')
-    if (rest === '') continue
-    while (rest.length > w) {
-      const cut = rest.lastIndexOf(' ', w)
-      const at = cut > w / 2 ? cut : w
-      lines.push(rest.slice(0, at).replace(/\s+$/, ''))
-      rest = rest.slice(at).replace(/^\s+/, '')
-    }
-    lines.push(rest)
-  }
-  if (lines.length <= maxLines) return lines
-  const kept = lines.slice(0, maxLines)
-  kept[maxLines - 1] = `${clip(kept[maxLines - 1] ?? '', w - 1).replace(/…$/, '')}…`
-  return kept
-}
-
 export const shellLine = (stats: Stats): string => {
   const running = runningShell(stats).length
-  const done = recentShell(stats, 1)[0]
-  const last = done ? `; last: ${statusMark(done).icon} ${formatDuration(shellDuration(done, 0))} $ ${clip(done.command, 60)}` : ''
-  return `Terminal: ${running} running; ${stats.shell.length} commands${last}`
+  const last = recentShell(stats, 3)
+  const text = last.map(c => `${statusMark(c).icon} ${formatDuration(shellDuration(c, 0) || 0)} $ ${clip(c.command, 40)}`).join(' | ')
+  return `Terminal: ${running} running; ${stats.shell.length} commands${last.length > 0 ? `; last: ${text}` : ''}`
 }
 
 // ---- Diagnostics ------------------------------------------------------------
