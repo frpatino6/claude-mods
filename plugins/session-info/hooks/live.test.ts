@@ -156,6 +156,8 @@ test('the context trend collects, then draws once two samples exist, and marks a
 
 test('Bash calls show as running, then recent with status, duration, redacted command and output tail', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
+  const failures: string[] = []
+  const check = (name: string, got: boolean, want: boolean) => void (got !== want && failures.push(`${name} wanted ${want}`))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, tokens: 1000 }, rateLimits: [] } }) as never)
   on('session.authorize', () => ({ value: null }) as never)
   on('agent.list', () => ({ value: [] }) as never)
@@ -179,7 +181,7 @@ test('Bash calls show as running, then recent with status, duration, redacted co
       viewport: { columns, rows: 60 },
     })
     const has = async (text: RegExp) => (await ui.find({ type: 'Text', text })) !== undefined
-    expect(await has(/no commands yet/)).toBe(true)
+    check('/no commands yet/', await has(/no commands yet/), true)
     await ui.unmount()
   }
   const ui = await $.ui.mount({
@@ -194,22 +196,35 @@ test('Bash calls show as running, then recent with status, duration, redacted co
 
   const first = $.tool.call({ tool: 'Bash', tool_use_id: 'b1', command: 'API_TOKEN=abc123 npm test', description: 'run tests' } as never)
   await clock.advance(3000)
-  expect(await has(/Running now/)).toBe(true)
-  expect(await has(/\$ API_TOKEN=\*\*\* npm test/)).toBe(true)
-  expect(await has(/abc123/)).toBe(false)
+  check('/output appears when the command finishes/', await has(/output appears when the command finishes/), true)
+  check('/^run tests$/', await has(/^run tests$/), true)
+  check('/API_TOKEN=\\*\\*\\* npm test/', await has(/API_TOKEN=\*\*\* npm test/), true)
+  check('/abc123/', await has(/abc123/), false)
   await clock.advance(3000)
   gates.get('b1')?.()
   await first
+  await clock.advance(3000)
+  // finished: the panel stays with what it did
+  check('/│ line4/', await has(/│ line4/), true)
+  check('/^run tests$/', await has(/^run tests$/), true)
+
   const second = $.tool.call({ tool: 'Bash', tool_use_id: 'b2', command: 'false' } as never)
+  const third = $.tool.call({ tool: 'Bash', tool_use_id: 'b3', command: 'sleep 99' } as never)
   await clock.advance(6000)
+  // replaced by the next command; the other running one is counted
+  check('/^run tests$/', await has(/^run tests$/), false)
+  check('/\\+1 more running/', await has(/\+1 more running/), true)
+  gates.get('b3')?.()
+  await third
   gates.get('b2')?.()
   await second
   await clock.advance(3000)
 
-  expect(await has(/Running now/)).toBe(false)
-  expect(await has(/exit 1/)).toBe(true)
-  expect(await has(/2 commands · /)).toBe(true)
-  expect(await has(/│ nope/)).toBe(true)
+  check('/output appears when the command finishes/', await has(/output appears when the command finishes/), false)
+  check('/exit 1/', await has(/exit 1/), true)
+  check('/^\\$ ?\\s*$|false/', await has(/^\$ ?\s*$|false/), true)
+  check('/3 commands · /', await has(/3 commands · /), true)
+  check('/│ nope/', await has(/│ nope/), true)
   await ui.unmount()
 })
 

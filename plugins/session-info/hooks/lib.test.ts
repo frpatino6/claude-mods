@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  currentShell,
+  wrapText,
   bumpDiag,
   diagNote,
   redact,
@@ -451,7 +453,7 @@ test('commandLine keeps the first line, redacted, with a hint for the rest', () 
 
 test('classifyBash reads status, exit code and output tail from what the engine exposes', () => {
   const ok = classifyBash({ text: 'a\nb\nc\nd', result: { stdout: 'a\nb\nc\nd\n', stderr: '' } })
-  expect(ok).toEqual({ status: 'ok', exit: undefined, tail: ['b', 'c', 'd'] })
+  expect(ok).toEqual({ status: 'ok', exit: undefined, tail: ['a', 'b', 'c', 'd'] })
   const bad = classifyBash({ isError: true, text: 'Exit code 2\nboom', result: { stdout: '', stderr: 'boom TOKEN=abc\n' } })
   expect(bad).toMatchObject({ status: 'failed', exit: 2, tail: ['boom TOKEN=***'] })
   expect(classifyBash({ text: 'Exit code 1' }).status).toBe('failed')
@@ -477,7 +479,8 @@ test('shell entries go running -> done with measured durations, totals and the r
   expect(shellTotals(s, 9999)).toEqual({ count: 2, failed: 1, totalMs: 5100 })
   expect(statusMark(s.shell[1]!)).toEqual({ icon: '✗', word: 'exit 1', isBad: true })
   expect(statusMark(s.shell[0]!)).toEqual({ icon: '✓', word: 'ok', isBad: false })
-  expect(shellLine(s)).toBe('Terminal: 0 running; 2 commands; last: ✗ 0s $ false | ✓ 5s $ sleep 5')
+  expect(shellLine(s)).toBe('Terminal: 0 running; 2 commands; last: ✗ 0s $ false')
+  expect(shellLine(startShell(s, { id: 'c', command: 'sleep 9' }, 7000))).toBe('Terminal: 1 running; 3 commands; last: ✗ 0s $ false')
   const running = startShell(emptyStats(), { id: 'r', command: 'x' }, 0)
   expect(shellTotals(running, 4000).totalMs).toBe(4000)
   expect(shellLine(emptyStats())).toBe('Terminal: 0 running; 0 commands')
@@ -498,4 +501,41 @@ test('diagnostics count events and surface in the report when tokens read 0', ()
   expect(diagNote(s)).toBe('turn events seen: 2, with usage: 1, session measures: 1')
   expect(textReport(s, 0)).toContain('Tokens: 0 total (in 0, out 0, cache read 0, cache write 0) [turn events seen: 2, with usage: 1, session measures: 1]')
   expect(textReport(addUsage(s, 'm', usage), 0)).not.toContain('[turn events seen')
+})
+
+test('currentShell: latest only, stays after completion, replaced by the next, parallel counts', () => {
+  expect(currentShell(emptyStats())).toBeUndefined()
+  let s = startShell(emptyStats(), { id: 'a', command: 'first' }, 0)
+  expect(currentShell(s)).toMatchObject({ entry: { id: 'a' }, moreRunning: 0 })
+  s = finishShell(s, 'a', { result: { stdout: 'x\n', stderr: '' } }, 10)
+  expect(currentShell(s)).toMatchObject({ entry: { id: 'a', status: 'ok' }, moreRunning: 0 })
+  s = startShell(s, { id: 'b', command: 'second' }, 20)
+  expect(currentShell(s)).toMatchObject({ entry: { id: 'b', status: 'running' }, moreRunning: 0 })
+  s = startShell(startShell(s, { id: 'c', command: 'third' }, 30), { id: 'd', command: 'fourth' }, 40)
+  expect(currentShell(s)).toMatchObject({ entry: { id: 'd' }, moreRunning: 2 })
+  s = finishShell(s, 'd', {}, 50)
+  expect(currentShell(s)).toMatchObject({ entry: { id: 'c', status: 'running' }, moreRunning: 1 })
+  s = finishShell(finishShell(finishShell(s, 'c', {}, 60), 'b', {}, 61), 'a', {}, 62)
+  expect(currentShell(s)?.entry.id).toBe('d')
+})
+
+test('the full command is kept (redacted) and the output tail holds the last 8 lines', () => {
+  const s = startShell(emptyStats(), { id: 'a', command: 'echo one\nTOKEN=abc deploy --now', description: 'deploys' }, 0)
+  expect(s.shell[0]).toMatchObject({ command: 'echo one …(+1)', full: 'echo one\nTOKEN=*** deploy --now', description: 'deploys' })
+  const out = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n')
+  const done = finishShell(s, 'a', { result: { stdout: out, stderr: '' } }, 5)
+  expect(done.shell[0]?.tail).toHaveLength(8)
+  expect(done.shell[0]?.tail[0]).toBe('line 5')
+  expect(done.shell[0]?.tail[7]).toBe('line 12')
+})
+
+test('wrapText wraps on spaces, keeps line breaks and ends in … when cut', () => {
+  expect(wrapText('short', 20, 3)).toEqual(['short'])
+  expect(wrapText('aaaa bbbb cccc dddd', 9, 5)).toEqual(['aaaa bbbb', 'cccc dddd'])
+  expect(wrapText('one\ntwo', 20, 3)).toEqual(['one', 'two'])
+  expect(wrapText('x'.repeat(30), 10, 5)).toEqual(['x'.repeat(10), 'x'.repeat(10), 'x'.repeat(10)])
+  const cut = wrapText('aaaa bbbb cccc dddd eeee ffff gggg', 9, 2)
+  expect(cut).toHaveLength(2)
+  expect(cut[1]?.endsWith('…')).toBe(true)
+  expect(wrapText('', 10, 3)).toEqual([])
 })

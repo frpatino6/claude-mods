@@ -9,8 +9,10 @@ import {
   diagNote,
   finishShell,
   isRunning,
-  recentShell,
-  runningShell,
+  currentShell,
+  redact as redactText,
+  TAIL_LINES,
+  wrapText,
   shellDuration,
   shellTotals,
   spinner,
@@ -503,16 +505,49 @@ export const register: Register = on => {
           ))),
     ])
 
-    // 3c. Terminal
+    // 3c. Terminal: one panel, the current (or last) command
     const clockNow = await $.clock.now()
-    const live = runningShell(s)
-    const recent = recentShell(s, W >= 44 ? 8 : 5)
-    const longestCmd = Math.max(1, ...recent.map(c => shellDuration(c, clockNow)))
+    const cur = currentShell(s)
     const totals = shellTotals(s, clockNow)
-    const lastOut = recent.find(c => c.tail.length > 0)
+    const panel = (() => {
+      if (!cur) return [<Text dimColor>no commands yet</Text>]
+      const c = cur.entry
+      const running = isRunning(c)
+      const ms = shellDuration(c, clockNow)
+      const mark = statusMark(c)
+      const color = running ? 'yellow' : mark.isBad ? 'red' : ms > LONG_COMMAND_MS ? 'yellow' : ACCENT
+      const outLines = W >= 44 ? TAIL_LINES : 4
+      const tail = c.tail.slice(-outLines)
+      return [
+        ...barRows(
+          {
+            label: running ? `${spinner(clockNow)} running` : `${mark.icon} ${mark.word}`,
+            percent: Math.min(100, (ms / LONG_COMMAND_MS) * 100),
+            primary: formatDuration(ms),
+            secondary: running ? 'elapsed' : 'took',
+            labelW,
+          },
+          color,
+          true,
+        ),
+        ...(c.description ? [<Text bold wrap="wrap">{redactText(c.description)}</Text>] : []),
+        ...wrapText(c.full || c.command, W - 2, 3).map((line, i) => (
+          <Text>
+            <Text dimColor>{i === 0 ? '$ ' : '  '}</Text>
+            {line}
+          </Text>
+        )),
+        ...(cur.moreRunning > 0 ? [<Text dimColor>{`+${cur.moreRunning} more running`}</Text>] : []),
+        ...(running
+          ? [<Text dimColor>output appears when the command finishes</Text>]
+          : tail.length > 0
+            ? [<Text dimColor>{`output (last ${tail.length} line${tail.length === 1 ? '' : 's'}, redacted)`}</Text>, ...tail.map(line => <Text dimColor>{clip(`│ ${line}`, W)}</Text>)]
+            : [<Text dimColor>no output</Text>]),
+      ]
+    })()
     const terminal = card('Terminal', [
       s.shell.length === 0 ? (
-        <Text dimColor>no commands yet</Text>
+        <Text> </Text>
       ) : (
         <Text>
           <Text bold>{totals.count}</Text>
@@ -523,38 +558,9 @@ export const register: Register = on => {
         </Text>
       ),
       <Text dimColor wrap="wrap">
-        Bar = duration relative to the longest · red = failed · yellow = over 30s · exit codes are read from the result text, background shells are not listed, times are measured by this mod
+        Latest command only · bar = time against 30s (yellow while running or over 30s, red if failed) · live output isn't exposed by the engine, and exit codes are read from the result text
       </Text>,
-      ...(live.length > 0 ? [<Text bold>Running now</Text>] : []),
-      ...live.map(c => (
-        <Text>
-          <Text bold color="yellow">{spinner(clockNow)}</Text>
-          <Text bold>{` ${padStart(formatDuration(shellDuration(c, clockNow)), 6)} `}</Text>
-          <Text>{clip(`$ ${c.command}`, Math.max(8, W - 10))}</Text>
-        </Text>
-      )),
-      ...(recent.length > 0 ? [<Text bold>Recent</Text>] : []),
-      ...recent.flatMap(c => {
-        const mark = statusMark(c)
-        const ms = shellDuration(c, clockNow)
-        const color = mark.isBad ? 'red' : ms > LONG_COMMAND_MS ? 'yellow' : ACCENT
-        return [
-          <Text>
-            <Text bold color={mark.isBad ? 'red' : undefined}>{`${mark.icon} `}</Text>
-            <Text>{clip(`$ ${c.command}`, Math.max(8, W - 3))}</Text>
-          </Text>,
-          ...barRows(
-            { label: `${mark.word}`, percent: (ms / longestCmd) * 100, primary: formatDuration(ms), secondary: c.description ?? '', labelW },
-            color,
-          ),
-        ]
-      }),
-      ...(lastOut
-        ? [
-            <Text dimColor>last output (stdout{lastOut.status === 'failed' ? ' + stderr' : ''}, redacted)</Text>,
-            ...lastOut.tail.map(line => <Text dimColor>{clip(`│ ${line}`, W)}</Text>),
-          ]
-        : []),
+      ...panel,
     ])
 
     // 4. Activity
